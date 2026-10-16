@@ -1,0 +1,86 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resume Tailor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{--bg:#f7f6f3;--card:#fff;--ink:#1d1d1b;--mute:#6b6a65;--line:#e2e0d9;--acc:#2b5fd9}
+@media(prefers-color-scheme:dark){:root{--bg:#161615;--card:#212120;--ink:#ecebe6;--mute:#9b9a94;--line:#363633;--acc:#6b95f0}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:900px;margin:0 auto;padding:20px 16px 60px}h1{font-size:22px;margin:4px 0 14px}h2{font-size:16px;margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+textarea,input,select{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px}
+textarea{min-height:140px}.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}.row>*{flex:1 1 160px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:8px 14px;cursor:pointer}
+button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disabled{opacity:.5}
+.job{border-top:1px solid var(--line);padding:12px 0}.job:first-child{border-top:0}.m{color:var(--mute);font-size:13px}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}a{color:var(--acc)}
+.notes{border-left:3px solid #1d7a4b;padding:6px 12px;font-size:13px;white-space:pre-wrap;margin:8px 0}
+.out textarea{min-height:320px;font:13px/1.45 ui-monospace,monospace;margin-top:6px}.err{color:#b3411f}
+</style></head><body><main>
+<h1>Resume Tailor</h1>
+<section class="card"><h2>1. Your base resume</h2>
+<input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
+<textarea id="resume" placeholder="Or paste your resume text"></textarea></section>
+<section class="card"><h2>2. Search new jobs</h2>
+<div class="row"><input id="q" placeholder="Keywords, e.g. data analyst"><input id="where" placeholder="City, State (optional), e.g. Austin, TX">
+<select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select></div>
+<button class="p" id="go">Search</button> <span class="m" id="smsg"></span></section>
+<section class="card"><h2>Add a job from a link or text</h2>
+<div class="row"><input id="link" placeholder="Paste a job posting URL"><button class="p" id="addlink" style="flex:0 0 auto">Add from link</button></div>
+<details><summary class="m" style="cursor:pointer">Link not working? Paste the job text instead</summary>
+<div class="row" style="margin-top:8px"><input id="mt" placeholder="Job title"><input id="mc" placeholder="Company"></div>
+<textarea id="md" placeholder="Paste the full job description"></textarea><button id="addtext" style="margin-top:8px">Add job</button></details>
+<div class="m" id="lmsg"></div></section>
+<section class="card"><div style="display:flex;justify-content:space-between"><h2>3. Jobs &amp; tailored resumes</h2><button id="all">Tailor all</button></div><div id="jobs" class="m">Run a search to see jobs.</div></section>
+</main><script>
+const $=id=>document.getElementById(id);let jobs=[];
+try{$("resume").value=localStorage.getItem("resume")||""}catch(e){}
+$("resume").oninput=()=>{try{localStorage.setItem("resume",$("resume").value)}catch(e){}};
+$("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
+ $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
+$("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textContent="Enter keywords.";return}
+ $("go").disabled=true;$("smsg").textContent="Searching…";
+ try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}`);
+  const d=await r.json();if(d.error)throw new Error(d.error);jobs=d.jobs;
+  $("smsg").textContent=`${jobs.length} jobs found`+(d.warnings.length?` (issues: ${d.warnings.join("; ")})`:"");render()}
+ catch(e){$("smsg").innerHTML='<span class="err">'+e.message+'</span>'}$("go").disabled=false};
+async function tailor(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
+ j.busy=true;j.err="";render();
+ try{const r=await fetch("/api/tailor",{method:"POST",body:JSON.stringify({resume,job:j})});const d=await r.json();if(d.error)throw new Error(d.error);j.out=d.resume;j.notes=d.notes}
+ catch(e){j.err=e.message}j.busy=false;render()}
+$("all").onclick=async()=>{for(const j of jobs.filter(x=>!x.out))await tailor(j)};
+
+const addJob=j=>{jobs.unshift(j);render()};
+$("addlink").onclick=async()=>{const u=$("link").value.trim();if(!u)return;$("addlink").disabled=true;$("lmsg").textContent="Reading the page…";
+ try{const r=await fetch("/api/fetchjob?url="+encodeURIComponent(u));const d=await r.json();if(d.error)throw new Error(d.error);
+  addJob(d.job);$("link").value="";$("lmsg").textContent="Added: "+d.job.title}
+ catch(e){$("lmsg").innerHTML='<span class="err"></span>';$("lmsg").firstChild.textContent=e.message}$("addlink").disabled=false};
+$("addtext").onclick=()=>{const d=$("md").value.trim();if(!d)return;
+ addJob({id:"txt"+Date.now(),title:$("mt").value.trim()||"Untitled role",company:$("mc").value.trim()||"Company",location:"",url:"#",source:"Pasted",posted:Date.now(),description:d});
+ $("mt").value=$("mc").value=$("md").value="";$("lmsg").textContent="Added."};
+function docx(text){const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+ const ps=text.split("\n").map((l,i)=>{const t=l.trim();if(!t)return"<w:p/>";const h=i===0||/^[A-Z][A-Z &\/,-]{2,}$/.test(t),b=/^[-•*]\s+/.test(t);
+  return`<w:p><w:pPr>${b?'<w:ind w:left="360" w:hanging="200"/>':""}<w:spacing w:after="50"/></w:pPr><w:r><w:rPr>${h?"<w:b/>":""}<w:sz w:val="${i===0?32:h?24:21}"/></w:rPr><w:t xml:space="preserve">${esc(b?"• "+t.replace(/^[-•*]\s+/,""):t)}</w:t></w:r></w:p>`}).join("");
+ const z=new JSZip();z.file("[Content_Types].xml",'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+ z.file("_rels/.rels",'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+ z.file("word/document.xml",`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${ps}<w:sectPr><w:pgMar w:top="900" w:right="1000" w:bottom="900" w:left="1000"/></w:sectPr></w:body></w:document>`);
+ return z.generateAsync({type:"blob"})}
+async function dl(j,ext){const text=document.getElementById("o"+j.id).value,blob=ext==="docx"?await docx(text):new Blob([text],{type:"text/plain"});
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`Resume - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
+ jobs.forEach(j=>{const el=document.createElement("div");el.className="job";
+  const age=Math.max(1,Math.round((Date.now()-j.posted)/3600e3));
+  el.innerHTML=`<b></b> <span class="m"></span><div class="m"></div>`;el.querySelector("b").textContent=j.title+" · "+j.company;
+  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago"].filter(Boolean).join(" · ");
+  const l=document.createElement("a");l.href=j.url;if(j.url==="#")l.style.display="none";l.target="_blank";l.rel="noopener";l.textContent="View posting";el.lastChild.append(l);
+  const acts=document.createElement("div");acts.className="acts";const b=document.createElement("button");b.className="p";b.disabled=!!j.busy;
+  b.textContent=j.busy?"Tailoring…":j.out?"Re-tailor":"Tailor resume";b.onclick=()=>tailor(j);acts.append(b);el.append(acts);
+  if(j.err){const e=document.createElement("div");e.className="err";e.textContent=j.err;el.append(e)}
+  if(j.out){j.id=j.id;const o=document.createElement("div");o.className="out";
+   if(j.notes){const n=document.createElement("div");n.className="notes";n.textContent=j.notes;o.append(n)}
+   const t=document.createElement("textarea");t.id="o"+j.id;t.value=j.out;t.oninput=()=>j.out=t.value;
+   const a=document.createElement("div");a.className="acts";
+   [["docx","Download .docx"],["txt","Download .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x);a.append(d)});
+   o.append(t,a);el.append(o)}
+  box.append(el)})}
+</script></body></html>
