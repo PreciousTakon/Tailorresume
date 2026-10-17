@@ -27,7 +27,9 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <div class="m">Used only when a job asks for them. Never adds anything you don't list here.</div></details></section>
 <section class="card"><h2>2. Search new jobs</h2>
 <div class="row"><input id="q" placeholder="Keywords, e.g. data analyst"><input id="where" placeholder="City, State (optional), e.g. Austin, TX">
-<select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select></div>
+<select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select>
+<select id="tonly"><option value="0">Keywords in title or description</option><option value="1">Keywords in job title only</option></select>
+<select id="sort"><option value="match">Sort: best match to my resume</option><option value="new">Sort: newest</option></select></div>
 <button class="p" id="go">Search</button> <span class="m" id="smsg"></span></section>
 <section class="card"><h2>Add a job from a link or text</h2>
 <div class="row"><input id="link" placeholder="Paste a job posting URL"><button class="p" id="addlink" style="flex:0 0 auto">Add from link</button></div>
@@ -43,9 +45,10 @@ $("extra").oninput=()=>{try{localStorage.setItem("extra",$("extra").value)}catch
 $("resume").oninput=()=>{try{localStorage.setItem("resume",$("resume").value)}catch(e){}};
 $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
  $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
+$("sort").onchange=()=>render();
 $("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textContent="Enter keywords.";return}
  $("go").disabled=true;$("smsg").textContent="Searching…";
- try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}`);
+ try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}&title=${$("tonly").value}`);
   const d=await r.json();if(d.error)throw new Error(d.error);jobs=d.jobs;
   const names={adzuna:"Adzuna",usajobs:"USAJobs",muse:"The Muse",remotive:"Remotive",jobicy:"Jobicy"};
   let m=`${jobs.length} jobs found. `+d.stats.map(x=>`${names[x.source]}: ${x.recent} of ${x.found} in window`).join(" | ");
@@ -107,11 +110,24 @@ function docx(text){const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").re
  return z.generateAsync({type:"blob"})}
 async function dl(j,ext){const text=document.getElementById("o"+j.id).value,blob=ext==="pdf"?buildPdf(text).output("blob"):ext==="docx"?await docx(text):new Blob([text],{type:"text/plain"});
  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`Resume - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+const tok=s=>s.match(/[A-Za-z0-9][A-Za-z0-9+#.\/-]*[A-Za-z0-9+#]|[A-Za-z0-9]/g)||[];
+function skillTerms(resume){
+ const all=tok(resume),low=new Set(all.filter(w=>w===w.toLowerCase()));
+ const out=new Set();
+ all.forEach(w=>{ if(w.length<2||/^\d+$/.test(w))return;
+  const lw=w.toLowerCase(); if(low.has(lw))return;
+  const caps=/[A-Z]/.test(w)||/[0-9+#]/.test(w); if(!caps)return;
+  if(w!==w.toUpperCase()&&/(ed|ing)$/i.test(w))return;
+  out.add(lw)});
+ return out}
+function scoreJob(terms,j){const t=new Set(tok((j.title+" "+j.description).toLowerCase()));let n=0;terms.forEach(x=>{if(t.has(x))n++});return n}
 function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
- jobs.forEach(j=>{const el=document.createElement("div");el.className="job";
+ const terms=skillTerms($("resume").value);jobs.forEach(j=>j.score=terms.size?scoreJob(terms,j):null);
+ const list=$("sort").value==="match"&&terms.size?[...jobs].sort((a,b)=>b.score-a.score||b.posted-a.posted):jobs;
+ list.forEach(j=>{const el=document.createElement("div");el.className="job";
   const age=Math.max(1,Math.round((Date.now()-j.posted)/3600e3));
   el.innerHTML=`<b></b> <span class="m"></span><div class="m"></div>`;el.querySelector("b").textContent=j.title+" · "+j.company;
-  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago"].filter(Boolean).join(" · ");
+  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago",j.score!=null?j.score+" of your skills matched":""].filter(Boolean).join(" · ");
   const l=document.createElement("a");l.href=j.url;if(j.url==="#")l.style.display="none";l.target="_blank";l.rel="noopener";l.textContent="View posting";el.lastChild.append(l);
   const acts=document.createElement("div");acts.className="acts";const b=document.createElement("button");b.className="p";b.disabled=!!j.busy;
   b.textContent=j.busy?"Tailoring…":j.out?"Re-tailor":"Tailor resume";b.onclick=()=>tailor(j);acts.append(b);el.append(acts);

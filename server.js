@@ -3,7 +3,8 @@ const http = require("http"), fs = require("fs"), path = require("path");
 const PORT = process.env.PORT || 3000;
 const KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
-const { ADZUNA_APP_ID, ADZUNA_APP_KEY, APP_PASSWORD } = process.env;
+const clean = v => (v || "").trim().replace(/^["']|["']$/g, "");
+const ADZUNA_APP_ID = clean(process.env.ADZUNA_APP_ID), ADZUNA_APP_KEY = clean(process.env.ADZUNA_APP_KEY), APP_PASSWORD = process.env.APP_PASSWORD;
 const crypto = require("crypto");
 if (!APP_PASSWORD && process.env.RENDER) { console.error("Set APP_PASSWORD before hosting publicly."); process.exit(1); }
 const authed = req => {
@@ -17,17 +18,18 @@ const strip = h => (h || "").replace(/<(br|\/p|\/li|\/h\d)\s*\/?>/gi, "\n").repl
   .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
   .replace(/&#39;|&rsquo;/g, "'").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n\n").trim();
 const getJSON = async (url) => { const r = await fetch(url, { headers: { "User-Agent": "resume-tailor/1.0" } });
-  if (!r.ok) throw new Error(url.split("?")[0] + " -> " + r.status); return r.json(); };
+  if (!r.ok) { const t = (await r.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160); throw new Error(url.split("?")[0] + " -> " + r.status + (t ? " " + t : "")); }
+  return r.json(); };
 
 // Each source returns [{id,title,company,location,url,posted(ms),description,source}]
 const US_OK = /usa|u\.s\.|united states|america|worldwide|anywhere|north america/i;
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
 const sources = {
   // Best US coverage: free key at developer.adzuna.com (ADZUNA_APP_ID / ADZUNA_APP_KEY)
-  async adzuna(q, where, hours) {
+  async adzuna(q, where, hours, titleOnly) {
     if (!ADZUNA_APP_ID) return [];
     const u = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${ADZUNA_APP_ID}&app_key=${ADZUNA_APP_KEY}` +
-      `&results_per_page=50&sort_by=date&max_days_old=${Math.max(1, Math.ceil(hours / 24))}&what=${encodeURIComponent(q)}&where=${encodeURIComponent(where || "")}`;
+      `&results_per_page=50&sort_by=date&max_days_old=${Math.max(1, Math.ceil(hours / 24))}&${titleOnly ? "title_only" : "what"}=${encodeURIComponent(q)}&where=${encodeURIComponent(where || "")}`;
     const d = await getJSON(u);
     return d.results.map(j => ({ id: "adz" + j.id, title: j.title.replace(/<[^>]+>/g, ""), company: j.company?.display_name || "",
       location: j.location?.display_name || "", url: j.redirect_url, posted: Date.parse(j.created), source: "Adzuna",
@@ -65,16 +67,17 @@ const sources = {
   },
 };
 
-async function search(q, where, hours) {
+async function search(q, where, hours, titleOnly) {
   const cutoff = Date.now() - hours * 3600e3, warnings = [], stats = [];
   const runs = await Promise.all(Object.entries(sources).map(async ([n, f]) => {
     try {
-      const r = await f(q, where, hours);
+      const r = await f(q, where, hours, titleOnly);
       stats.push({ source: n, found: r.length, recent: r.filter(j => j.posted >= cutoff).length });
       return r;
     } catch (e) { warnings.push(n + ": " + e.message); return []; }
   }));
   let jobs = runs.flat().filter(j => j.posted >= cutoff);
+  if (titleOnly) { const w = words(q); jobs = jobs.filter(j => w.some(x => j.title.toLowerCase().includes(x))); }
   if (where) { const w = where.toLowerCase(); jobs = jobs.filter(j => j.location.toLowerCase().includes(w) || /remote|anywhere|worldwide/i.test(j.location)); }
   const seen = new Set();
   jobs = jobs.filter(j => { const k = (j.title + j.company).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
@@ -223,7 +226,7 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (!authed(req)) { res.writeHead(401, { "www-authenticate": 'Basic realm="Resume Tailor"' }); return res.end("Password required"); }
   try {
-    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24));
+    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1"));
     if (u.pathname === "/api/fetchjob") return send(res, 200, { job: await jobFromLink(u.searchParams.get("url") || "") });
     if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job, (extra || "").slice(0, 3000))); }
     res.writeHead(200, { "content-type": "text/html" }); res.end(fs.readFileSync(path.join(__dirname, "index.html")));
