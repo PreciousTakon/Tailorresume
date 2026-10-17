@@ -131,13 +131,39 @@ ${r}
 JOB: ${j.title} at ${j.company}
 ${j.description.slice(0, 12000)}`;
 
-async function tailor(resume, job) {
-  if (!KEY) throw new Error("ANTHROPIC_API_KEY is not set");
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODELS = [process.env.GEMINI_MODEL, "gemini-2.5-flash", "gemini-3.5-flash", "gemini-3-flash-preview"].filter(Boolean);
+
+async function askGemini(prompt) {
+  let last = "";
+  for (const m of GEMINI_MODELS) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_KEY },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 6000, temperature: 0.4 } }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 404) { last = `Model ${m} not found`; continue; } // try the next model name
+    if (r.status === 429) throw new Error("Gemini free-tier limit reached. Wait a minute or try again tomorrow.");
+    if (!r.ok) throw new Error(d.error?.message || "Gemini API error " + r.status);
+    const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+    if (!text) throw new Error("Gemini returned no text (" + (d.candidates?.[0]?.finishReason || d.promptFeedback?.blockReason || "unknown") + ")");
+    return text;
+  }
+  throw new Error(last + ". Set GEMINI_MODEL to a current model id.");
+}
+
+async function askClaude(prompt) {
   const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
     headers: { "content-type": "application/json", "x-api-key": KEY, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: MODEL, max_tokens: 4000, messages: [{ role: "user", content: PROMPT(resume, job) }] }) });
+    body: JSON.stringify({ model: MODEL, max_tokens: 4000, messages: [{ role: "user", content: prompt }] }) });
   const d = await r.json(); if (!r.ok) throw new Error(d.error?.message || "Claude API error " + r.status);
-  const [out, notes = ""] = d.content.map(c => c.text || "").join("").split("===NOTES===");
+  return d.content.map(c => c.text || "").join("");
+}
+
+// Uses Gemini (free tier) if GEMINI_API_KEY is set, otherwise Claude if ANTHROPIC_API_KEY is set.
+async function tailor(resume, job) {
+  if (!GEMINI_KEY && !KEY) throw new Error("No AI key set. Add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY.");
+  const text = await (GEMINI_KEY ? askGemini : askClaude)(PROMPT(resume, job));
+  const [out, notes = ""] = text.split("===NOTES===");
   return { resume: out.trim(), notes: notes.trim() };
 }
 
@@ -153,4 +179,4 @@ http.createServer(async (req, res) => {
     if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job)); }
     res.writeHead(200, { "content-type": "text/html" }); res.end(fs.readFileSync(path.join(__dirname, "index.html")));
   } catch (e) { send(res, 500, { error: e.message }); }
-}).listen(PORT, () => console.log("Resume Tailor running at http://localhost:" + PORT + (KEY ? "" : "  (set ANTHROPIC_API_KEY to enable tailoring)")));
+}).listen(PORT, () => console.log("Resume Tailor running at http://localhost:" + PORT + (KEY || GEMINI_KEY ? "" : "  (set GEMINI_API_KEY or ANTHROPIC_API_KEY to enable tailoring)")));
