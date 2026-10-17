@@ -19,12 +19,14 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 .out textarea{min-height:320px;font:13px/1.45 ui-monospace,monospace;margin-top:6px}.err{color:#b3411f}
 </style></head><body><main>
 <h1>TRYBE Resume Tailor</h1>
-<section class="card"><h2>1. Your base resume</h2>
+<section class="card"><h2>1. Client &amp; base resume</h2>
+<div class="row"><select id="client"></select><button id="cnew">New client</button><button id="cren">Rename</button><button id="cdel">Delete</button><button id="cclr">Clear all saved data</button></div>
 <input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
 <textarea id="resume" placeholder="Or paste your resume text"></textarea>
 <details style="margin-top:10px"><summary class="m" style="cursor:pointer">Optional: skills or tools I have that aren't on my resume</summary>
 <textarea id="extra" style="min-height:90px;margin-top:8px" placeholder="True items only, one per line, e.g.&#10;Pulumi: 6 months on a personal project&#10;Splunk: used for log search at Cigna"></textarea>
-<div class="m">Used only when a job asks for them. Never adds anything you don't list here.</div></details></section>
+<div class="m">Used only when a job asks for them. Never adds anything you don't list here.</div></details>
+<div class="m" id="fmsg" style="margin-top:6px"></div></section>
 <section class="card"><h2>2. Search new jobs</h2>
 <div class="row"><input id="q" placeholder="Keywords, e.g. data analyst"><input id="where" placeholder="City, State (optional), e.g. Austin, TX">
 <select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select>
@@ -41,9 +43,26 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <section class="card"><div style="display:flex;justify-content:space-between"><h2>3. Jobs &amp; tailored resumes</h2><button id="all">Tailor all</button></div><div id="jobs" class="m">Run a search to see jobs.</div></section>
 </main><script>
 const $=id=>document.getElementById(id);let jobs=[];
-try{$("resume").value=localStorage.getItem("resume")||"";$("extra").value=localStorage.getItem("extra")||""}catch(e){}
-$("extra").oninput=()=>{try{localStorage.setItem("extra",$("extra").value)}catch(e){}};
-$("resume").oninput=()=>{try{localStorage.setItem("resume",$("resume").value)}catch(e){}};
+// ---- clients: each client keeps their own resume and extra skills (saved in this browser only) ----
+let store=(()=>{try{const s=JSON.parse(localStorage.getItem("rt_clients"));if(s&&s.list&&s.list.length)return s}catch(e){}
+ let r="",x="";try{r=localStorage.getItem("resume")||"";x=localStorage.getItem("extra")||""}catch(e){}
+ const id="c"+Date.now();return{active:id,list:[{id,name:"Client 1",resume:r,extra:x}]}})();
+const cur=()=>store.list.find(c=>c.id===store.active)||store.list[0];
+const persist=()=>{try{localStorage.setItem("rt_clients",JSON.stringify(store));localStorage.removeItem("resume");localStorage.removeItem("extra")}catch(e){}};
+const syncFromUI=()=>{const c=cur();c.resume=$("resume").value;c.extra=$("extra").value;persist()};
+function loadUI(){const c=cur();store.active=c.id;$("resume").value=c.resume;$("extra").value=c.extra;
+ $("client").innerHTML="";store.list.forEach(x=>{const o=document.createElement("option");o.value=x.id;o.textContent=x.name;$("client").append(o)});$("client").value=c.id;$("fmsg").textContent=""}
+function leave(){if(jobs.some(j=>j.out||j.letter)&&!confirm("Switching clients clears the jobs and tailored documents on screen. Download anything you need first. Continue?"))return false;syncFromUI();jobs=[];$("smsg").textContent="";return true}
+$("resume").oninput=$("extra").oninput=syncFromUI;
+$("client").onchange=()=>{const to=$("client").value;if(!leave()){$("client").value=store.active;return}store.active=to;loadUI();persist();render()};
+$("cnew").onclick=()=>{const n=(prompt("Client name")||"").trim();if(!n||!leave())return;const id="c"+Date.now();store.list.push({id,name:n,resume:"",extra:""});store.active=id;loadUI();persist();render()};
+$("cren").onclick=()=>{const n=(prompt("New name",cur().name)||"").trim();if(!n)return;cur().name=n;loadUI();persist()};
+$("cdel").onclick=()=>{if(!confirm('Delete "'+cur().name+'" and their saved resume?'))return;jobs=[];
+ store.list=store.list.filter(c=>c.id!==store.active);if(!store.list.length)store.list=[{id:"c"+Date.now(),name:"Client 1",resume:"",extra:""}];store.active=store.list[0].id;loadUI();persist();render()};
+$("cclr").onclick=()=>{if(!confirm("Delete ALL saved clients, resumes, skills and results from this browser?"))return;
+ try{["rt_clients","resume","extra","rt"].forEach(k=>localStorage.removeItem(k))}catch(e){}
+ const id="c"+Date.now();store={active:id,list:[{id,name:"Client 1",resume:"",extra:""}]};jobs=[];loadUI();$("smsg").textContent="";render();$("fmsg").textContent="All saved data cleared."};
+loadUI();
 $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
  $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
 $("sort").onchange=()=>render();

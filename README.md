@@ -6,6 +6,7 @@ Searches job boards for postings from the last 24 hours (or 48h / 7 days), then 
 - Search US jobs (Adzuna, USAJobs, The Muse, Remotive, Jobicy) from the last 24h / 48h / 7 days.
 - Add a job by link (works with most boards, BambooHR, Workday, iCIMS) or by pasting the text.
 - Tailors your resume to each job without inventing experience; lists requirements you don't meet.
+- Separate saved profiles per client (resume + extra skills), plus a "Clear all saved data" button. Data stays in your browser only.
 - Optional box for true skills that aren't on your resume.
 - Filter by Remote / Hybrid / On-site (work type is guessed from the posting text).
 - One-click cover letters per job (truthful, from your resume), downloadable as PDF, .docx or .txt.
