@@ -156,20 +156,26 @@ async function jobFromLink(link) {
     company: new URL(url).hostname.replace(/^www\./, ""), location: "See posting", url, source: "Link", posted: Date.now(), description: text.slice(0, 15000) };
 }
 
-const PROMPT = (r, j) => `You are an expert resume writer. Tailor the candidate's resume to the job below.
+const PROMPT = (r, j, extra) => `You are an expert resume writer. Tailor the candidate's resume to the job below.
 
-STRICT RULES
-- Use ONLY facts present in the base resume. Never invent employers, titles, dates, degrees, skills, metrics or certifications.
-- Reorder sections and bullets so the most relevant experience comes first; reword bullets to mirror the job's terminology where truthful; add a short targeted summary.
-- Plain text only: first line is the candidate's name, then a contact line, then section headings in ALL CAPS, bullets starting with "- ".
+STRICT RULES (follow every one)
+1. TRUTH ONLY. Use only facts that appear in the base resume or in the ADDITIONAL FACTS section (if present). Never add a title, seniority level (do not call the candidate a "Leader" or "Manager" unless a held title says so), tool, skill, practice, metric, employer type, stakeholder group, compliance framework or certification that is not written in the base resume or ADDITIONAL FACTS. If a job keyword has no equivalent fact in the resume, leave it out (it goes in the NOTES instead).
+2. KEEP FIXED FACTS EXACTLY: name, contact line, headline line, employers, job titles, locations, dates, certifications, degrees and schools.
+3. KEEP EVERYTHING SUBSTANTIVE. Keep every tool, technology, skill and metric from the base resume. In the skills section you may regroup and reorder lines so the job's most relevant skills come first, but never delete a skill, tool or category. Keep every experience bullet; you may reword lightly to mirror the job's terminology, reorder bullets so the most relevant come first, or merge two near-duplicate bullets without losing any tool or number.
+4. SUMMARY: 3-4 sentences, true to the candidate's real title and years of experience, emphasizing the experience most relevant to this job.
+5. FORMAT, plain text only (no markdown, no ** or #): line 1 = name; line 2 = headline line (if the base resume has one); next line = contact line; then section headings in ALL CAPS on their own line (PROFESSIONAL SUMMARY, CORE TECHNICAL EXPERTISE, PROFESSIONAL EXPERIENCE, CERTIFICATIONS, EDUCATION). In experience: a company line like "COMPANY NAME — City, ST", then a role line like "Job Title | Mon YYYY – Mon YYYY", then bullets starting with "- ". Skills as bullets like "- Cloud: AWS, Azure". Certifications and education as bullets.
 
 Reply in exactly this format:
 <resume text>
 ===NOTES===
-<3-5 short lines: keywords matched, what you emphasized, and job requirements the resume does NOT cover>
+<3-5 short lines: keywords matched, what you emphasized, and job requirements the resume does NOT cover (including any requirement such as citizenship, clearance, certifications or years of management experience)>
 
 BASE RESUME:
 ${r}
+${extra ? `
+ADDITIONAL FACTS FROM THE CANDIDATE (true, but not on the base resume). Use an item ONLY if it is relevant to this job. Add it to the skills section and, only if the candidate gave enough detail, to the most fitting experience bullet. Never invent employers, dates, depth of experience or metrics beyond what is written here:
+${extra}
+` : ""}
 
 JOB: ${j.title} at ${j.company}
 ${j.description.slice(0, 12000)}`;
@@ -203,9 +209,9 @@ async function askClaude(prompt) {
 }
 
 // Uses Gemini (free tier) if GEMINI_API_KEY is set, otherwise Claude if ANTHROPIC_API_KEY is set.
-async function tailor(resume, job) {
+async function tailor(resume, job, extra) {
   if (!GEMINI_KEY && !KEY) throw new Error("No AI key set. Add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY.");
-  const text = await (GEMINI_KEY ? askGemini : askClaude)(PROMPT(resume, job));
+  const text = await (GEMINI_KEY ? askGemini : askClaude)(PROMPT(resume, job, extra));
   const [out, notes = ""] = text.split("===NOTES===");
   return { resume: out.trim(), notes: notes.trim() };
 }
@@ -219,7 +225,7 @@ http.createServer(async (req, res) => {
   try {
     if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24));
     if (u.pathname === "/api/fetchjob") return send(res, 200, { job: await jobFromLink(u.searchParams.get("url") || "") });
-    if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job)); }
+    if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job, (extra || "").slice(0, 3000))); }
     res.writeHead(200, { "content-type": "text/html" }); res.end(fs.readFileSync(path.join(__dirname, "index.html")));
   } catch (e) { send(res, 500, { error: e.message }); }
 }).listen(PORT, () => console.log("Resume Tailor running at http://localhost:" + PORT + (KEY || GEMINI_KEY ? "" : "  (set GEMINI_API_KEY or ANTHROPIC_API_KEY to enable tailoring)")));

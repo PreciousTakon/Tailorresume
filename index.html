@@ -1,6 +1,7 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Resume Tailor</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root{--bg:#f7f6f3;--card:#fff;--ink:#1d1d1b;--mute:#6b6a65;--line:#e2e0d9;--acc:#2b5fd9}
@@ -20,7 +21,10 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <h1>Resume Tailor</h1>
 <section class="card"><h2>1. Your base resume</h2>
 <input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
-<textarea id="resume" placeholder="Or paste your resume text"></textarea></section>
+<textarea id="resume" placeholder="Or paste your resume text"></textarea>
+<details style="margin-top:10px"><summary class="m" style="cursor:pointer">Optional: skills or tools I have that aren't on my resume</summary>
+<textarea id="extra" style="min-height:90px;margin-top:8px" placeholder="True items only, one per line, e.g.&#10;Pulumi: 6 months on a personal project&#10;Splunk: used for log search at Cigna"></textarea>
+<div class="m">Used only when a job asks for them. Never adds anything you don't list here.</div></details></section>
 <section class="card"><h2>2. Search new jobs</h2>
 <div class="row"><input id="q" placeholder="Keywords, e.g. data analyst"><input id="where" placeholder="City, State (optional), e.g. Austin, TX">
 <select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select></div>
@@ -34,7 +38,8 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <section class="card"><div style="display:flex;justify-content:space-between"><h2>3. Jobs &amp; tailored resumes</h2><button id="all">Tailor all</button></div><div id="jobs" class="m">Run a search to see jobs.</div></section>
 </main><script>
 const $=id=>document.getElementById(id);let jobs=[];
-try{$("resume").value=localStorage.getItem("resume")||""}catch(e){}
+try{$("resume").value=localStorage.getItem("resume")||"";$("extra").value=localStorage.getItem("extra")||""}catch(e){}
+$("extra").oninput=()=>{try{localStorage.setItem("extra",$("extra").value)}catch(e){}};
 $("resume").oninput=()=>{try{localStorage.setItem("resume",$("resume").value)}catch(e){}};
 $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
  $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
@@ -51,7 +56,7 @@ $("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textConte
  catch(e){$("smsg").innerHTML='<span class="err">'+e.message+'</span>'}$("go").disabled=false};
 async function tailor(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
  j.busy=true;j.err="";render();
- try{const r=await fetch("/api/tailor",{method:"POST",body:JSON.stringify({resume,job:j})});const d=await r.json();if(d.error)throw new Error(d.error);j.out=d.resume;j.notes=d.notes}
+ try{const r=await fetch("/api/tailor",{method:"POST",body:JSON.stringify({resume,job:j,extra:$("extra").value.trim()})});const d=await r.json();if(d.error)throw new Error(d.error);j.out=d.resume;j.notes=d.notes}
  catch(e){j.err=e.message}j.busy=false;render()}
 $("all").onclick=async()=>{for(const j of jobs.filter(x=>!x.out))await tailor(j)};
 
@@ -63,6 +68,36 @@ $("addlink").onclick=async()=>{const u=$("link").value.trim();if(!u)return;$("ad
 $("addtext").onclick=()=>{const d=$("md").value.trim();if(!d)return;
  addJob({id:"txt"+Date.now(),title:$("mt").value.trim()||"Untitled role",company:$("mc").value.trim()||"Company",location:"",url:"#",source:"Pasted",posted:Date.now(),description:d});
  $("mt").value=$("mc").value=$("md").value="";$("lmsg").textContent="Added."};
+function buildPdf(text){
+ const {jsPDF}=window.jspdf, W=612,H=792,M=46,CW=W-2*M;
+ text=text.replace(/\r/g,"").replace(/\*\*/g,"").replace(/[^\x09\x0A\x20-\x7E\xA0-\xFF\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g,"");
+ const lines=text.split("\n"), first=lines.findIndex(l=>l.trim());
+ const make=fs=>{
+  const d=new jsPDF({unit:"pt",format:"letter"});let y=M, lh=fs*1.3, started=false;
+  const need=n=>{if(y+n>H-M+4){d.addPage();y=M}};
+  const set=(st,sz)=>{d.setFont("helvetica",st);d.setFontSize(sz||fs)};
+  const draw=(txt,x,w,label)=>{set("normal");d.splitTextToSize(txt,w-2).forEach((ln,k)=>{need(lh);
+    if(k===0&&label&&ln.startsWith(label)){set("bold");d.text(label,x,y);const lw=d.getTextWidth(label);set("normal");d.text(ln.slice(label.length),x+lw,y)}
+    else d.text(ln,x,y);y+=lh})};
+  lines.forEach((raw,idx)=>{
+   const t=raw.trim().replace(/^#+\s*/,"");
+   if(!t){if(started)y+=fs*0.15;return}
+   if(idx===first){set("bold",fs+9);need(fs+12);d.text(t,W/2,y+fs+4,{align:"center"});y+=fs+14;return}
+   const isHead=/^[A-Z][A-Z0-9 &\/,()-]{2,}$/.test(t);
+   if(isHead){started=true;need(fs*3);y+=fs*0.7;set("bold",fs+1);d.text(t,M,y);y+=3.5;d.setDrawColor(60);d.setLineWidth(0.7);d.line(M,y,W-M,y);y+=fs*1.25;return}
+   if(!started){set(/\|/.test(t)&&t===t.toUpperCase()?"bold":"normal",fs-0.5);d.splitTextToSize(t,CW).forEach(ln=>{need(lh);d.text(ln,W/2,y,{align:"center"});y+=lh-1});return}
+   const b=t.match(/^[-•*]\s+(.*)$/);
+   if(b){const s=b[1],m=s.match(/^([A-Za-z][^:.]{1,38}):\s+\S/);need(lh);set("normal");d.text("\u2022",M+6,y);draw(s,M+18,CW-18,m?m[1]+":":null);return}
+   const role=t.match(/^(.*\S)\s+\|\s+([^|]*(?:\d{4}|Present|Current)[^|]*)$/i);
+   if(role){need(lh);set("italic");d.text(role[1],M,y);set("normal");d.text(role[2],W-M,y,{align:"right"});y+=lh;return}
+   if(/^[A-Z0-9 &.,'\u2019()-]{3,}(\s+[\u2014\u2013-]\s+.*)?$/.test(t)&&t.length<90){need(lh*2);y+=fs*0.5;set("bold",fs+0.5);d.text(t,M,y);y+=lh;return}
+   const m=t.match(/^([A-Za-z][^:.]{1,38}):\s+\S/);draw(t,M,CW,m?m[1]+":":null);
+  });
+  return d;
+ };
+ let d;for(const fs of [10.5,10,9.5,9]){d=make(fs);if(d.getNumberOfPages()<=2)break}
+ return d;
+}
 function docx(text){const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
  const ps=text.split("\n").map((l,i)=>{const t=l.trim();if(!t)return"<w:p/>";const h=i===0||/^[A-Z][A-Z &\/,-]{2,}$/.test(t),b=/^[-•*]\s+/.test(t);
   return`<w:p><w:pPr>${b?'<w:ind w:left="360" w:hanging="200"/>':""}<w:spacing w:after="50"/></w:pPr><w:r><w:rPr>${h?"<w:b/>":""}<w:sz w:val="${i===0?32:h?24:21}"/></w:rPr><w:t xml:space="preserve">${esc(b?"• "+t.replace(/^[-•*]\s+/,""):t)}</w:t></w:r></w:p>`}).join("");
@@ -70,7 +105,7 @@ function docx(text){const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").re
  z.file("_rels/.rels",'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
  z.file("word/document.xml",`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${ps}<w:sectPr><w:pgMar w:top="900" w:right="1000" w:bottom="900" w:left="1000"/></w:sectPr></w:body></w:document>`);
  return z.generateAsync({type:"blob"})}
-async function dl(j,ext){const text=document.getElementById("o"+j.id).value,blob=ext==="docx"?await docx(text):new Blob([text],{type:"text/plain"});
+async function dl(j,ext){const text=document.getElementById("o"+j.id).value,blob=ext==="pdf"?buildPdf(text).output("blob"):ext==="docx"?await docx(text):new Blob([text],{type:"text/plain"});
  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`Resume - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
 function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
  jobs.forEach(j=>{const el=document.createElement("div");el.className="job";
@@ -85,7 +120,7 @@ function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.te
    if(j.notes){const n=document.createElement("div");n.className="notes";n.textContent=j.notes;o.append(n)}
    const t=document.createElement("textarea");t.id="o"+j.id;t.value=j.out;t.oninput=()=>j.out=t.value;
    const a=document.createElement("div");a.className="acts";
-   [["docx","Download .docx"],["txt","Download .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x);a.append(d)});
+   [["pdf","Download PDF"],["docx","Download .docx"],["txt","Download .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x);a.append(d)});
    o.append(t,a);el.append(o)}
   box.append(el)})}
 </script></body></html>
