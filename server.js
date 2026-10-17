@@ -26,10 +26,10 @@ const US_OK = /usa|u\.s\.|united states|america|worldwide|anywhere|north america
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
 const sources = {
   // Best US coverage: free key at developer.adzuna.com (ADZUNA_APP_ID / ADZUNA_APP_KEY)
-  async adzuna(q, where, hours, titleOnly) {
+  async adzuna(q, where, hours, titleOnly, mode) {
     if (!ADZUNA_APP_ID) return [];
     const u = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${ADZUNA_APP_ID}&app_key=${ADZUNA_APP_KEY}` +
-      `&results_per_page=50&sort_by=date&max_days_old=${Math.max(1, Math.ceil(hours / 24))}&${titleOnly ? "title_only" : "what"}=${encodeURIComponent(q)}&where=${encodeURIComponent(where || "")}`;
+      `&results_per_page=50&sort_by=date&max_days_old=${Math.max(1, Math.ceil(hours / 24))}&${titleOnly ? "title_only" : "what"}=${encodeURIComponent(q + (!titleOnly && (mode === "remote" || mode === "hybrid") ? " " + mode : ""))}&where=${encodeURIComponent(where || "")}`;
     const d = await getJSON(u);
     return d.results.map(j => ({ id: "adz" + j.id, title: j.title.replace(/<[^>]+>/g, ""), company: j.company?.display_name || "",
       location: j.location?.display_name || "", url: j.redirect_url, posted: Date.parse(j.created), source: "Adzuna",
@@ -58,21 +58,35 @@ const sources = {
   async remotive(q) {
     const d = await getJSON("https://remotive.com/api/remote-jobs?limit=100&search=" + encodeURIComponent(q));
     return d.jobs.filter(j => US_OK.test(j.candidate_required_location || "worldwide")).map(j => ({ id: "rem" + j.id, title: j.title, company: j.company_name,
-      location: "Remote (" + (j.candidate_required_location || "Worldwide") + ")", url: j.url, posted: Date.parse(j.publication_date + "Z"), description: strip(j.description), source: "Remotive" }));
+      location: "Remote (" + (j.candidate_required_location || "Worldwide") + ")", url: j.url, posted: Date.parse(j.publication_date + "Z"), description: strip(j.description), source: "Remotive", mode: "remote" }));
   },
   async jobicy(q) {
     const d = await getJSON("https://jobicy.com/api/v2/remote-jobs?count=50&geo=usa&tag=" + encodeURIComponent(q));
     return (d.jobs || []).map(j => ({ id: "job" + j.id, title: j.jobTitle, company: j.companyName, location: "Remote (" + (j.jobGeo || "USA") + ")",
-      url: j.url, posted: Date.parse(String(j.pubDate).replace(" ", "T") + "Z"), description: strip(j.jobDescription), source: "Jobicy" }));
+      url: j.url, posted: Date.parse(String(j.pubDate).replace(" ", "T") + "Z"), description: strip(j.jobDescription), source: "Jobicy", mode: "remote" }));
   },
 };
 
-async function search(q, where, hours, titleOnly) {
+
+// Work mode: "remote" | "hybrid" | "onsite" | "unspecified" (guessed from title, location and description)
+const HYB = /(hybrid (work|schedule|model|position|role|setting|office|opportunity|basis|remote)|(is|be|this|position|role|work|working|offers?) (a )?hybrid|\(hybrid\)|hybrid[,;:|]|\d days? (a|per|in the) (week )?(in|at|from)? ?(the )?(office|on-?site))/i;
+const REM = /((fully|100%|completely|entirely|work|is a|is) remote|remote (position|role|work|opportunity|first|-first|eligible|within|us\b|\(|,)|work from home|telecommut|\bwfh\b|\(remote\)|\bremote\b\s*[-–|])/i;
+const ONS = /(on-?site|in[- ]office|in[- ]person|onsite)/i;
+const inferMode = j => {
+  if (j.mode) return j.mode;
+  const head = (j.title + " " + j.location).toLowerCase(), body = (j.description || "").slice(0, 4000);
+  if (/\bhybrid\b/.test(head) || HYB.test(body)) return "hybrid";
+  if (/\bremote\b|anywhere/.test(head) || REM.test(body)) return "remote";
+  if (ONS.test(head + " " + body)) return "onsite";
+  return "unspecified";
+};
+
+async function search(q, where, hours, titleOnly, mode) {
   if (/^(us|usa|u\.s\.a?\.?|united states( of america)?|america|anywhere|nationwide)$/i.test((where || "").trim())) where = ""; // whole US
   const cutoff = Date.now() - hours * 3600e3, warnings = [], stats = [];
   const runs = await Promise.all(Object.entries(sources).map(async ([n, f]) => {
     try {
-      const r = await f(q, where, hours, titleOnly);
+      const r = await f(q, where, hours, titleOnly, mode);
       stats.push({ source: n, found: r.length, recent: r.filter(j => j.posted >= cutoff).length });
       return r;
     } catch (e) { warnings.push(n + ": " + e.message); return []; }
@@ -85,6 +99,9 @@ async function search(q, where, hours, titleOnly) {
   }
   const seen = new Set();
   jobs = jobs.filter(j => { const k = (j.title + j.company).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  jobs.forEach(j => j.mode = inferMode(j));
+  if (mode === "remote" || mode === "hybrid") jobs = jobs.filter(j => j.mode === mode);
+  else if (mode === "onsite") jobs = jobs.filter(j => j.mode === "onsite" || j.mode === "unspecified");
   return { jobs: jobs.sort((a, b) => b.posted - a.posted), warnings, stats, adzuna: !!ADZUNA_APP_ID };
 }
 
@@ -223,6 +240,27 @@ async function tailor(resume, job, extra) {
   return { resume: out.trim(), notes: notes.trim() };
 }
 
+const COVER = (r, j, extra) => `You are an expert career coach. Write a cover letter for the candidate applying to the job below.
+
+RULES
+- Use ONLY facts in the base resume${extra ? " or the ADDITIONAL FACTS" : ""}. Never invent employers, titles, tools, metrics, years, achievements, or personal connection to the company. Do not claim a skill or requirement the resume doesn't show; if a requirement is missing, simply don't mention it (never apologize for it and never fake it).
+- 3 to 4 short paragraphs, 250 to 330 words. Open with the specific role and company and the strongest honest match. In the middle, use 2-3 concrete achievements from the resume, with their real numbers, that map to what this job needs. Close with a confident, courteous call to action.
+- Natural, professional tone. No cliches ("I am writing to express my interest", "passionate", "synergy"). No markdown.
+- Start with "Dear Hiring Manager," (unless the posting names a hiring manager). End with "Sincerely," then the candidate's name on the next line. No header, address block or date.
+- Output only the letter.
+
+BASE RESUME:
+${r}
+${extra ? `\nADDITIONAL FACTS (true, usable if relevant):\n${extra}\n` : ""}
+JOB: ${j.title} at ${j.company}
+${j.location || ""}
+${(j.description || "").slice(0, 12000)}`;
+
+async function cover(resume, job, extra) {
+  if (!GEMINI_KEY && !KEY) throw new Error("No AI key set. Add GEMINI_API_KEY (free) or ANTHROPIC_API_KEY.");
+  return { letter: (await (GEMINI_KEY ? askGemini : askClaude)(COVER(resume, job, extra))).trim() };
+}
+
 const body = req => new Promise((ok, no) => { let b = ""; req.on("data", c => { b += c; if (b.length > 2e6) req.destroy(); }); req.on("end", () => ok(b)); req.on("error", no); });
 const send = (res, code, obj) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); };
 
@@ -230,8 +268,9 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (!authed(req)) { res.writeHead(401, { "www-authenticate": 'Basic realm="Resume Tailor"' }); return res.end("Password required"); }
   try {
-    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1"));
+    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1", u.searchParams.get("mode") || ""));
     if (u.pathname === "/api/fetchjob") return send(res, 200, { job: await jobFromLink(u.searchParams.get("url") || "") });
+    if (u.pathname === "/api/cover" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await cover(resume, job, (extra || "").slice(0, 3000))); }
     if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job, (extra || "").slice(0, 3000))); }
     res.writeHead(200, { "content-type": "text/html" }); res.end(fs.readFileSync(path.join(__dirname, "index.html")));
   } catch (e) { send(res, 500, { error: e.message }); }

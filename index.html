@@ -29,6 +29,7 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <div class="row"><input id="q" placeholder="Keywords, e.g. data analyst"><input id="where" placeholder="City, State (optional), e.g. Austin, TX">
 <select id="hours"><option value="24">Past 24 hours</option><option value="48">Past 48 hours</option><option value="168">Past 7 days</option></select>
 <select id="tonly"><option value="0">Keywords in title or description</option><option value="1">Keywords in job title only</option></select>
+<select id="mode"><option value="">All work types</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site (or not stated)</option></select>
 <select id="sort"><option value="match">Sort: best match to my resume</option><option value="new">Sort: newest</option></select></div>
 <button class="p" id="go">Search</button> <span class="m" id="smsg"></span></section>
 <section class="card"><h2>Add a job from a link or text</h2>
@@ -48,7 +49,7 @@ $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
 $("sort").onchange=()=>render();
 $("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textContent="Enter keywords.";return}
  $("go").disabled=true;$("smsg").textContent="Searching…";
- try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}&title=${$("tonly").value}`);
+ try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}&title=${$("tonly").value}&mode=${$("mode").value}`);
   const d=await r.json();if(d.error)throw new Error(d.error);jobs=d.jobs;
   const names={adzuna:"Adzuna",usajobs:"USAJobs",muse:"The Muse",remotive:"Remotive",jobicy:"Jobicy"};
   let m=`${jobs.length} jobs found. `+d.stats.map(x=>`${names[x.source]}: ${x.recent} of ${x.found} in window`).join(" | ");
@@ -108,8 +109,22 @@ function docx(text){const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").re
  z.file("_rels/.rels",'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
  z.file("word/document.xml",`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${ps}<w:sectPr><w:pgMar w:top="900" w:right="1000" w:bottom="900" w:left="1000"/></w:sectPr></w:body></w:document>`);
  return z.generateAsync({type:"blob"})}
-async function dl(j,ext){const text=document.getElementById("o"+j.id).value,blob=ext==="pdf"?buildPdf(text).output("blob"):ext==="docx"?await docx(text):new Blob([text],{type:"text/plain"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`Resume - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+function letterHead(){const L=$("resume").value.split("\n").map(x=>x.trim()).filter(Boolean);return{name:L[0]||"",contact:L.find(x=>/@/.test(x))||""}}
+function buildLetterPdf(body){const {jsPDF}=window.jspdf,{name,contact}=letterHead(),d=new jsPDF({unit:"pt",format:"letter"}),M=72,W=612,H=792;let y=M;
+ const clean=s=>s.replace(/\*\*/g,"").replace(/[^\x09\x0A\x20-\x7E\xA0-\xFF\u2013\u2014\u2018\u2019\u201C\u201D\u2022\u2026]/g,"");
+ d.setFont("helvetica","bold");d.setFontSize(16);d.text(clean(name),M,y);y+=16;
+ d.setFont("helvetica","normal");d.setFontSize(9.5);d.text(clean(contact),M,y);y+=8;d.setDrawColor(60);d.setLineWidth(.7);d.line(M,y,W-M,y);y+=26;
+ d.setFontSize(11);
+ clean(body).replace(/\r/g,"").split("\n").forEach(p=>{if(!p.trim()){y+=7;return}d.splitTextToSize(p.trim(),W-2*M).forEach(ln=>{if(y>H-M){d.addPage();y=M}d.text(ln,M,y);y+=15.5})});
+ return d}
+async function dl(j,ext,kind){const isL=kind==="letter",text=document.getElementById((isL?"l":"o")+j.id).value;
+ const full=isL?(letterHead().name+"\n"+letterHead().contact+"\n\n"+text):text;
+ const blob=ext==="pdf"?(isL?buildLetterPdf(text):buildPdf(text)).output("blob"):ext==="docx"?await docx(full):new Blob([full],{type:"text/plain"});
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`${isL?"Cover Letter":"Resume"} - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+async function letter(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
+ j.lbusy=true;j.err="";render();
+ try{const r=await fetch("/api/cover",{method:"POST",body:JSON.stringify({resume,job:j,extra:$("extra").value.trim()})});const d=await r.json();if(d.error)throw new Error(d.error);j.letter=d.letter}
+ catch(e){j.err=e.message}j.lbusy=false;render()}
 const tok=s=>s.match(/[A-Za-z0-9][A-Za-z0-9+#.\/-]*[A-Za-z0-9+#]|[A-Za-z0-9]/g)||[];
 function skillTerms(resume){
  const all=tok(resume),low=new Set(all.filter(w=>w===w.toLowerCase()));
@@ -129,10 +144,11 @@ function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.te
  list.forEach(j=>{const el=document.createElement("div");el.className="job";
   const age=Math.max(1,Math.round((Date.now()-j.posted)/3600e3));
   el.innerHTML=`<b></b> <span class="m"></span><div class="m"></div>`;el.querySelector("b").textContent=j.title+" · "+j.company;
-  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago",j.score!=null?j.score+" of your skills matched":""].filter(Boolean).join(" · ");
+  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago",({remote:"Remote",hybrid:"Hybrid",onsite:"On-site"})[j.mode]||"",j.score!=null?j.score+" of your skills matched":""].filter(Boolean).join(" · ");
   const l=document.createElement("a");l.href=j.url;if(j.url==="#")l.style.display="none";l.target="_blank";l.rel="noopener";l.textContent="View posting";el.lastChild.append(l);
   const acts=document.createElement("div");acts.className="acts";const b=document.createElement("button");b.className="p";b.disabled=!!j.busy;
-  b.textContent=j.busy?"Tailoring…":j.out?"Re-tailor":"Tailor resume";b.onclick=()=>tailor(j);acts.append(b);el.append(acts);
+  b.textContent=j.busy?"Tailoring…":j.out?"Re-tailor":"Tailor resume";b.onclick=()=>tailor(j);acts.append(b);
+  const cb=document.createElement("button");cb.disabled=!!j.lbusy;cb.textContent=j.lbusy?"Writing…":j.letter?"Rewrite cover letter":"Cover letter";cb.onclick=()=>letter(j);acts.append(cb);el.append(acts);
   if(j.err){const e=document.createElement("div");e.className="err";e.textContent=j.err;el.append(e)}
   if(j.out){j.id=j.id;const o=document.createElement("div");o.className="out";
    if(j.notes){const n=document.createElement("div");n.className="notes";n.textContent=j.notes;o.append(n)}
@@ -140,5 +156,10 @@ function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.te
    const a=document.createElement("div");a.className="acts";
    [["pdf","Download PDF"],["docx","Download .docx"],["txt","Download .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x);a.append(d)});
    o.append(t,a);el.append(o)}
+  if(j.letter){const o=document.createElement("div");o.className="out";const hd=document.createElement("div");hd.className="m";hd.textContent="Cover letter";
+   const t=document.createElement("textarea");t.id="l"+j.id;t.style.minHeight="260px";t.value=j.letter;t.oninput=()=>j.letter=t.value;
+   const a=document.createElement("div");a.className="acts";
+   [["pdf","Download letter PDF"],["docx","Download letter .docx"],["txt","Download letter .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x,"letter");a.append(d)});
+   o.append(hd,t,a);el.append(o)}
   box.append(el)})}
 </script></body></html>
