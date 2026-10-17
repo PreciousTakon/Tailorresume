@@ -18,7 +18,7 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 .notes{border-left:3px solid #1d7a4b;padding:6px 12px;font-size:13px;white-space:pre-wrap;margin:8px 0}
 .out textarea{min-height:320px;font:13px/1.45 ui-monospace,monospace;margin-top:6px}.err{color:#b3411f}
 </style></head><body><main>
-<h1>Trybe Resume Tailor</h1>
+<h1>TRYBE Resume Tailor</h1>
 <section class="card"><h2>1. Your base resume</h2>
 <input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
 <textarea id="resume" placeholder="Or paste your resume text"></textarea>
@@ -117,10 +117,13 @@ function buildLetterPdf(body){const {jsPDF}=window.jspdf,{name,contact}=letterHe
  d.setFontSize(11);
  clean(body).replace(/\r/g,"").split("\n").forEach(p=>{if(!p.trim()){y+=7;return}d.splitTextToSize(p.trim(),W-2*M).forEach(ln=>{if(y>H-M){d.addPage();y=M}d.text(ln,M,y);y+=15.5})});
  return d}
+function fileName(j,isL){const raw=letterHead().name||"Resume",nm=raw===raw.toUpperCase()?raw.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()):raw;
+ const fn=s=>s.replace(/[\\\/]/g,"-").replace(/[:*?"<>|]/g,"").replace(/\s+/g," ").trim().slice(0,60);
+ return fn(nm)+"_"+fn(j.title)+(isL?"_Cover Letter":"")}
 async function dl(j,ext,kind){const isL=kind==="letter",text=document.getElementById((isL?"l":"o")+j.id).value;
  const full=isL?(letterHead().name+"\n"+letterHead().contact+"\n\n"+text):text;
  const blob=ext==="pdf"?(isL?buildLetterPdf(text):buildPdf(text)).output("blob"):ext==="docx"?await docx(full):new Blob([full],{type:"text/plain"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`${isL?"Cover Letter":"Resume"} - ${j.company} - ${j.title}`.replace(/[^\w .-]/g,"")+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=fileName(j,isL)+"."+ext;a.click();URL.revokeObjectURL(a.href)}
 async function letter(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
  j.lbusy=true;j.err="";render();
  try{const r=await fetch("/api/cover",{method:"POST",body:JSON.stringify({resume,job:j,extra:$("extra").value.trim()})});const d=await r.json();if(d.error)throw new Error(d.error);j.letter=d.letter}
