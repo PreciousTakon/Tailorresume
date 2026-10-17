@@ -68,6 +68,7 @@ const sources = {
 };
 
 async function search(q, where, hours, titleOnly) {
+  if (/^(us|usa|u\.s\.a?\.?|united states( of america)?|america|anywhere|nationwide)$/i.test((where || "").trim())) where = ""; // whole US
   const cutoff = Date.now() - hours * 3600e3, warnings = [], stats = [];
   const runs = await Promise.all(Object.entries(sources).map(async ([n, f]) => {
     try {
@@ -78,7 +79,10 @@ async function search(q, where, hours, titleOnly) {
   }));
   let jobs = runs.flat().filter(j => j.posted >= cutoff);
   if (titleOnly) { const w = words(q); jobs = jobs.filter(j => w.some(x => j.title.toLowerCase().includes(x))); }
-  if (where) { const w = where.toLowerCase(); jobs = jobs.filter(j => j.location.toLowerCase().includes(w) || /remote|anywhere|worldwide/i.test(j.location)); }
+  if (where) { // Adzuna and USAJobs already filtered by location on their side
+    const w = where.toLowerCase(), city = w.split(",")[0].trim();
+    jobs = jobs.filter(j => ["Adzuna", "USAJobs"].includes(j.source) || j.location.toLowerCase().includes(city) || /remote|anywhere|worldwide/i.test(j.location));
+  }
   const seen = new Set();
   jobs = jobs.filter(j => { const k = (j.title + j.company).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   return { jobs: jobs.sort((a, b) => b.posted - a.posted), warnings, stats, adzuna: !!ADZUNA_APP_ID };

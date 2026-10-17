@@ -18,7 +18,7 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 .notes{border-left:3px solid #1d7a4b;padding:6px 12px;font-size:13px;white-space:pre-wrap;margin:8px 0}
 .out textarea{min-height:320px;font:13px/1.45 ui-monospace,monospace;margin-top:6px}.err{color:#b3411f}
 </style></head><body><main>
-<h1>Resume Tailor</h1>
+<h1>Trybe Resume Tailor</h1>
 <section class="card"><h2>1. Your base resume</h2>
 <input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
 <textarea id="resume" placeholder="Or paste your resume text"></textarea>
@@ -122,8 +122,10 @@ function skillTerms(resume){
  return out}
 function scoreJob(terms,j){const t=new Set(tok((j.title+" "+j.description).toLowerCase()));let n=0;terms.forEach(x=>{if(t.has(x))n++});return n}
 function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
- const terms=skillTerms($("resume").value);jobs.forEach(j=>j.score=terms.size?scoreJob(terms,j):null);
- const list=$("sort").value==="match"&&terms.size?[...jobs].sort((a,b)=>b.score-a.score||b.posted-a.posted):jobs;
+ const terms=skillTerms($("resume").value);
+ const qw=$("q").value.toLowerCase().split(/\s+/).filter(w=>w&&!["engineer","senior","sr","manager","developer","lead","staff","principal","the","and","jr","junior","specialist","analyst"].includes(w));
+ jobs.forEach(j=>{j.score=terms.size?scoreJob(terms,j):null;j.rank=(j.score||0)+qw.filter(w=>j.title.toLowerCase().includes(w)).length*8});
+ const list=$("sort").value==="match"&&terms.size?[...jobs].sort((a,b)=>b.rank-a.rank||b.posted-a.posted):jobs;
  list.forEach(j=>{const el=document.createElement("div");el.className="job";
   const age=Math.max(1,Math.round((Date.now()-j.posted)/3600e3));
   el.innerHTML=`<b></b> <span class="m"></span><div class="m"></div>`;el.querySelector("b").textContent=j.title+" · "+j.company;
