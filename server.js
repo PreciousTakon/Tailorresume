@@ -46,9 +46,9 @@ const sources = {
   },
   // The Muse: no key, US-focused; newest first, filtered by keywords here
   async muse(q) {
-    const pages = await Promise.all([0, 1, 2, 3, 4].map(p => getJSON("https://www.themuse.com/api/public/jobs?descending=true&page=" + p)));
+    const pages = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(p => getJSON("https://www.themuse.com/api/public/jobs?descending=true&page=" + p)));
     const w = words(q);
-    return pages.flatMap(p => p.results).filter(j => w.every(x => (j.name + " " + j.contents).toLowerCase().includes(x)))
+    return pages.flatMap(p => p.results).filter(j => w.some(x => j.name.toLowerCase().includes(x)) || w.every(x => (j.name + " " + j.contents).toLowerCase().includes(x)))
       .map(j => ({ id: "mus" + j.id, title: j.name, company: j.company?.name || "", location: (j.locations || []).map(l => l.name).join("; ") || "Not listed",
         url: j.refs?.landing_page, posted: Date.parse(j.publication_date), description: strip(j.contents), source: "The Muse" }));
   },
@@ -66,27 +66,32 @@ const sources = {
 };
 
 async function search(q, where, hours) {
-  const cutoff = Date.now() - hours * 3600e3, warnings = [];
-  const runs = await Promise.allSettled(Object.entries(sources).map(([n, f]) => f(q, where, hours).catch(e => { warnings.push(n + ": " + e.message); return []; })));
-  let jobs = runs.flatMap(r => r.value || []).filter(j => j.posted >= cutoff);
+  const cutoff = Date.now() - hours * 3600e3, warnings = [], stats = [];
+  const runs = await Promise.all(Object.entries(sources).map(async ([n, f]) => {
+    try {
+      const r = await f(q, where, hours);
+      stats.push({ source: n, found: r.length, recent: r.filter(j => j.posted >= cutoff).length });
+      return r;
+    } catch (e) { warnings.push(n + ": " + e.message); return []; }
+  }));
+  let jobs = runs.flat().filter(j => j.posted >= cutoff);
   if (where) { const w = where.toLowerCase(); jobs = jobs.filter(j => j.location.toLowerCase().includes(w) || /remote|anywhere|worldwide/i.test(j.location)); }
   const seen = new Set();
   jobs = jobs.filter(j => { const k = (j.title + j.company).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
-  return { jobs: jobs.sort((a, b) => b.posted - a.posted), warnings };
+  return { jobs: jobs.sort((a, b) => b.posted - a.posted), warnings, stats, adzuna: !!ADZUNA_APP_ID };
 }
-
 
 // ---- Fetch a job from a pasted link (blocks private/internal addresses) ----
 const dns = require("dns").promises;
 const isPrivate = ip => /^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || /^(::1|::|f[cd][0-9a-f]{2}:|fe80:)/i.test(ip) || /^::ffff:/i.test(ip);
-async function fetchPage(link) {
+async function fetchPage(link, accept = "text/html,application/xhtml+xml") {
   for (let hop = 0; hop < 5; hop++) {
     const x = new URL(link);
     if (!/^https?:$/.test(x.protocol)) throw new Error("Only http(s) links are supported");
     const { address } = await dns.lookup(x.hostname);
     if (isPrivate(address)) throw new Error("That address isn't allowed");
     const r = await fetch(x, { redirect: "manual", signal: AbortSignal.timeout(12000),
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; resume-tailor/1.0)", Accept: "text/html,application/xhtml+xml" } });
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; resume-tailor/1.0)", Accept: accept } });
     if (r.status >= 300 && r.status < 400 && r.headers.get("location")) { link = new URL(r.headers.get("location"), x).href; continue; }
     if (!r.ok) throw new Error("The site returned " + r.status + " (many job sites block automated access)");
     return { html: (await r.text()).slice(0, 2e6), url: x.href };
@@ -95,8 +100,46 @@ async function fetchPage(link) {
 }
 const findPosting = n => Array.isArray(n) ? n.map(findPosting).find(Boolean) : n && typeof n === "object"
   ? ([].concat(n["@type"] || []).includes("JobPosting") ? n : findPosting(n["@graph"] || Object.values(n))) : null;
+// Workday pages load via JavaScript; every posting also has a JSON twin under /wday/cxs/
+function workdayApiUrl(link) {
+  const u = new URL(link);
+  if (!/\.(myworkdayjobs|myworkdaysite)\.com$/i.test(u.hostname)) return null;
+  const seg = u.pathname.split("/").filter(Boolean).filter(x => !/^[a-z]{2}(-[A-Za-z]{2})?$/.test(x));
+  const i = seg.indexOf("job"); if (i < 1) return null;
+  const rest = seg.slice(i).filter(x => !/^(apply|applyManually|autofillWithResume)$/i.test(x));
+  const tenant = u.hostname.split(".")[0];
+  return `https://${u.hostname}/wday/cxs/${tenant}/${seg[i - 1]}/${rest.join("/")}`;
+}
+async function workdayJob(link) {
+  let api; try { api = workdayApiUrl(link); } catch (e) { return null; }
+  if (!api) return null;
+  try {
+    const { html } = await fetchPage(api, "application/json");
+    const d = JSON.parse(html), p = d.jobPostingInfo; if (!p) return null;
+    return { id: "lnk" + Date.now(), title: strip(p.title || "Job"), company: strip(d.hiringOrganization?.name || new URL(link).hostname.split(".")[0]),
+      location: [p.location, p.country?.descriptor].filter(Boolean).join(", ") || "See posting", url: link, source: "Link",
+      posted: Date.parse(p.startDate) || Date.now(), description: strip(p.jobDescription || "") };
+  } catch (e) { return null; }
+}
+async function bambooJob(link) {
+  const m = link.match(/^https?:\/\/([a-z0-9-]+)\.bamboohr\.com\/(?:careers|jobs)\/(\d+)/i);
+  if (!m) return null;
+  try { // BambooHR pages load via JavaScript; their JSON endpoint has the full posting
+    const { html, url } = await fetchPage(`https://${m[1]}.bamboohr.com/careers/${m[2]}/detail`, "application/json");
+    const o = JSON.parse(html), p = o.result?.jobOpening || o.result || o;
+    if (!p.jobOpeningName && !p.description) return null;
+    const loc = p.location ? [p.location.city, p.location.state].filter(Boolean).join(", ") : "";
+    return { id: "lnk" + Date.now(), title: strip(p.jobOpeningName || "Job"), company: strip(p.companyName || m[1].replace(/-/g, " ")), url: link, source: "Link",
+      location: loc || (p.isRemote ? "Remote" : p.atsLocation?.country || "See posting"), posted: Date.parse(p.datePosted) || Date.now(), description: strip(p.description || "") };
+  } catch (e) { return null; }
+}
 async function jobFromLink(link) {
-  const { html, url } = await fetchPage(link);
+  const bb = (await bambooJob(link)) || (await workdayJob(link)); if (bb) return bb;
+  // iCIMS shows the posting inside an iframe; ?in_iframe=1 returns that content directly
+  let target = link;
+  try { const t = new URL(link); if (/\.icims\.com$/i.test(t.hostname) && !t.searchParams.has("in_iframe")) { t.searchParams.set("in_iframe", "1"); target = t.href; } } catch (e) {}
+  const page = await fetchPage(target);
+  const html = page.html, url = page.url.replace(/([?&])in_iframe=1&?/, "$1").replace(/[?&]$/, "");
   let p = null;
   for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
     try { p = findPosting(JSON.parse(m[1])); if (p) break; } catch (e) {}

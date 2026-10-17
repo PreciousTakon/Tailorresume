@@ -42,7 +42,12 @@ $("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textConte
  $("go").disabled=true;$("smsg").textContent="Searching…";
  try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}`);
   const d=await r.json();if(d.error)throw new Error(d.error);jobs=d.jobs;
-  $("smsg").textContent=`${jobs.length} jobs found`+(d.warnings.length?` (issues: ${d.warnings.join("; ")})`:"");render()}
+  const names={adzuna:"Adzuna",usajobs:"USAJobs",muse:"The Muse",remotive:"Remotive",jobicy:"Jobicy"};
+  let m=`${jobs.length} jobs found. `+d.stats.map(x=>`${names[x.source]}: ${x.recent} of ${x.found} in window`).join(" | ");
+  if(d.warnings.length)m+=" | Problems: "+d.warnings.join("; ");
+  if(!d.adzuna)m+=" | Adzuna not connected (add ADZUNA_APP_ID and ADZUNA_APP_KEY for far more US results).";
+  if(!jobs.length)m+=" Try Past 7 days or broader keywords.";
+  $("smsg").textContent=m;render()}
  catch(e){$("smsg").innerHTML='<span class="err">'+e.message+'</span>'}$("go").disabled=false};
 async function tailor(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
  j.busy=true;j.err="";render();
