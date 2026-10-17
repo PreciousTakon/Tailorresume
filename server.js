@@ -4,6 +4,7 @@ const PORT = process.env.PORT || 3000;
 const KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
 const clean = v => (v || "").trim().replace(/^["']|["']$/g, "");
+const JOOBLE_KEY = clean(process.env.JOOBLE_API_KEY);
 const ADZUNA_APP_ID = clean(process.env.ADZUNA_APP_ID), ADZUNA_APP_KEY = clean(process.env.ADZUNA_APP_KEY), APP_PASSWORD = process.env.APP_PASSWORD;
 const crypto = require("crypto");
 if (!APP_PASSWORD && process.env.RENDER) { console.error("Set APP_PASSWORD before hosting publicly."); process.exit(1); }
@@ -24,16 +25,83 @@ const getJSON = async (url) => { const r = await fetch(url, { headers: { "User-A
 // Each source returns [{id,title,company,location,url,posted(ms),description,source}]
 const US_OK = /usa|u\.s\.|united states|america|worldwide|anywhere|north america/i;
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
+const GENERIC = new Set(["engineer", "engineers", "senior", "sr", "manager", "developer", "lead", "staff", "principal", "the", "and", "jr", "junior", "specialist", "analyst", "i", "ii", "iii"]);
+const keyWords = q => { const w = words(q), k = w.filter(x => !GENERIC.has(x)); return k.length ? k : w; };
+const decode = h => (h || "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+const pretty = s => s.replace(/[-_.]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+const getJ = async (url, opt = {}) => { const r = await fetch(url, { ...opt, signal: AbortSignal.timeout(20000), headers: { "User-Agent": "resume-tailor/1.0", ...(opt.headers || {}) } });
+  if (!r.ok) throw new Error(r.status + " from " + url.split("?")[0].replace(/\/api\/[^/]+$/, "/api/…")); return r.json(); };
+
+// Company career boards: "greenhouse:stripe", "lever:palantir", "ashby:ramp" or a career-page URL
+function parseCompany(s) {
+  s = (s || "").trim(); if (!s) return null;
+  const m = s.match(/^(greenhouse|lever|ashby):([\w.-]+)$/i); if (m) return { ats: m[1].toLowerCase(), slug: m[2] };
+  try {
+    const u = new URL(/^https?:/i.test(s) ? s : "https://" + s), seg = u.pathname.split("/").filter(Boolean);
+    if (/greenhouse\.io$/i.test(u.hostname)) { const f = u.searchParams.get("for") || (seg[0] === "embed" ? "" : seg[0]); return f ? { ats: "greenhouse", slug: f } : null; }
+    if (/lever\.co$/i.test(u.hostname) && seg[0]) return { ats: "lever", slug: seg[0], eu: /\.eu\./i.test(u.hostname) };
+    if (/ashbyhq\.com$/i.test(u.hostname) && seg[0]) return { ats: "ashby", slug: seg[0] };
+  } catch (e) {}
+  return null;
+}
+async function companyJobs(c) {
+  const name = pretty(c.slug);
+  if (c.ats === "greenhouse") {
+    const d = await getJ(`https://boards-api.greenhouse.io/v1/boards/${c.slug}/jobs?content=true`);
+    return (d.jobs || []).map(j => ({ id: "gh" + j.id, title: j.title, company: j.company_name || name, location: j.location?.name || "", url: j.absolute_url,
+      posted: Date.parse(j.first_published || j.updated_at), description: strip(decode(j.content)), source: "Greenhouse" }));
+  }
+  if (c.ats === "lever") {
+    const d = await getJ(`https://api.${c.eu ? "eu." : ""}lever.co/v0/postings/${c.slug}?mode=json`);
+    return d.map(j => ({ id: "lv" + j.id, title: j.text, company: name, location: j.categories?.location || (j.categories?.allLocations || []).join("; "), url: j.hostedUrl,
+      posted: j.createdAt, description: [j.descriptionPlain, ...(j.lists || []).map(l => l.text + "\n" + strip(l.content))].filter(Boolean).join("\n\n"), source: "Lever",
+      mode: ({ remote: "remote", hybrid: "hybrid", "on-site": "onsite" })[j.workplaceType] }));
+  }
+  const d = await getJ(`https://api.ashbyhq.com/posting-api/job-board/${c.slug}`);
+  return (d.jobs || []).filter(j => j.isListed !== false).map(j => ({ id: "ab" + j.id, title: j.title, company: name, location: j.location || "", url: j.jobUrl,
+    posted: Date.parse(j.publishedAt), description: j.descriptionPlain || strip(j.descriptionHtml), source: "Ashby",
+    mode: j.workplaceType ? ({ remote: "remote", hybrid: "hybrid", onsite: "onsite" })[String(j.workplaceType).toLowerCase().replace(/[^a-z]/g, "")] : (j.isRemote ? "remote" : undefined) }));
+}
+
 const sources = {
+  // Company career boards you choose (Greenhouse / Lever / Ashby): public, no key, full descriptions
+  async watchlist(q, where, hours, titleOnly, mode, companies) {
+    const raw = companies || [], parsed = raw.map(parseCompany), warn = raw.filter((x, i) => !parsed[i]).map(x => "not recognised: " + x);
+    let kw = keyWords(q); const out = [];
+    if (kw.some(x => /^(devops|sre|devsecops)$/.test(x))) kw = [...new Set([...kw, "devops", "sre", "site reliability", "platform", "infrastructure", "cloud", "devsecops"])]; // related titles
+    await Promise.all(parsed.filter(Boolean).slice(0, 30).map(async c => { try { out.push(...await companyJobs(c)); } catch (e) { warn.push(`${c.ats}:${c.slug} ${e.message}`); } }));
+    const res = out.filter(j => !kw.length || kw.some(x => j.title.toLowerCase().includes(x)));
+    res.warn = warn; return res;
+  },
+  // Jooble: free key at jooble.org/api/about (JOOBLE_API_KEY). Links go through jooble.org.
+  async jooble(q, where, hours) {
+    if (!JOOBLE_KEY) return [];
+    const since = new Date(Date.now() - hours * 3600e3).toISOString().slice(0, 10);
+    const page = async p => (await getJ(`https://jooble.org/api/${JOOBLE_KEY}`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keywords: q, location: where || "United States", page: String(p), datecreatedfrom: since }) })).jobs || [];
+    const a = await page(1); // one request per search: the free key has a 500-request lifetime limit
+    return a.map(j => ({ id: "jb" + j.id, title: strip(j.title), company: j.company || "", location: j.location || "", url: j.link,
+      posted: Date.parse(j.updated) || Date.now(), description: strip(j.snippet), source: "Jooble" }));
+  },
+  // Himalayas remote jobs (no key). Must link back to himalayas.app when shown.
+  async himalayas(q) {
+    const d = await getJ(`https://himalayas.app/jobs/api/search?q=${encodeURIComponent(q)}&sort=recent`);
+    return (d.jobs || []).filter(j => { const r = (j.locationRestrictions || []).join(" "); return !r || US_OK.test(r); }).map(j => ({ id: "him" + (j.guid || j.title),
+      title: j.title, company: j.companyName || j.company?.name || "", location: "Remote (" + ((j.locationRestrictions || []).join(", ") || "Worldwide") + ")",
+      url: j.guid || j.applicationLink, posted: typeof j.pubDate === "number" ? (j.pubDate < 1e12 ? j.pubDate * 1000 : j.pubDate) : Date.parse(j.pubDate),
+      description: strip(j.description || j.excerpt), source: "Himalayas", mode: "remote" }));
+  },
   // Best US coverage: free key at developer.adzuna.com (ADZUNA_APP_ID / ADZUNA_APP_KEY)
   async adzuna(q, where, hours, titleOnly, mode) {
     if (!ADZUNA_APP_ID) return [];
-    const u = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${ADZUNA_APP_ID}&app_key=${ADZUNA_APP_KEY}` +
+    const page = async p => { const u = `https://api.adzuna.com/v1/api/jobs/us/search/${p}?app_id=${ADZUNA_APP_ID}&app_key=${ADZUNA_APP_KEY}` +
       `&results_per_page=50&sort_by=date&max_days_old=${Math.max(1, Math.ceil(hours / 24))}&${titleOnly ? "title_only" : "what"}=${encodeURIComponent(q + (!titleOnly && (mode === "remote" || mode === "hybrid") ? " " + mode : ""))}&where=${encodeURIComponent(where || "")}`;
     const d = await getJSON(u);
     return d.results.map(j => ({ id: "adz" + j.id, title: j.title.replace(/<[^>]+>/g, ""), company: j.company?.display_name || "",
       location: j.location?.display_name || "", url: j.redirect_url, posted: Date.parse(j.created), source: "Adzuna",
-      description: strip(j.description) + "\n\n(Snippet only; open the link for the full posting.)" }));
+      description: strip(j.description) + "\n\n(Snippet only; open the link for the full posting.)" })); };
+    const [a, b] = await Promise.all([page(1), page(2).catch(() => [])]);
+    return a.concat(b);
   },
   // US federal jobs: free key at developer.usajobs.gov (USAJOBS_KEY + USAJOBS_EMAIL)
   async usajobs(q, where, hours) {
@@ -81,12 +149,13 @@ const inferMode = j => {
   return "unspecified";
 };
 
-async function search(q, where, hours, titleOnly, mode) {
+async function search(q, where, hours, titleOnly, mode, companies) {
   if (/^(us|usa|u\.s\.a?\.?|united states( of america)?|america|anywhere|nationwide)$/i.test((where || "").trim())) where = ""; // whole US
   const cutoff = Date.now() - hours * 3600e3, warnings = [], stats = [];
   const runs = await Promise.all(Object.entries(sources).map(async ([n, f]) => {
     try {
-      const r = await f(q, where, hours, titleOnly, mode);
+      const r = await f(q, where, hours, titleOnly, mode, companies);
+      (r.warn || []).forEach(w => warnings.push(n + ": " + w));
       stats.push({ source: n, found: r.length, recent: r.filter(j => j.posted >= cutoff).length });
       return r;
     } catch (e) { warnings.push(n + ": " + e.message); return []; }
@@ -205,22 +274,35 @@ JOB: ${j.title} at ${j.company}
 ${j.description.slice(0, 12000)}`;
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODELS = [process.env.GEMINI_MODEL, "gemini-2.5-flash", "gemini-3.5-flash", "gemini-3-flash-preview"].filter(Boolean);
+const GEMINI_MODELS = [process.env.GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3-flash-preview"].filter(Boolean);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function askGemini(prompt) {
-  let last = "";
+  let last = "", daily = false, limited = false;
   for (const m of GEMINI_MODELS) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_KEY },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 6000, temperature: 0.4 } }) });
-    const d = await r.json().catch(() => ({}));
-    if (r.status === 404) { last = `Model ${m} not found`; continue; } // try the next model name
-    if (r.status === 429) throw new Error("Gemini free-tier limit reached. Wait a minute or try again tomorrow.");
-    if (!r.ok) throw new Error(d.error?.message || "Gemini API error " + r.status);
-    const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
-    if (!text) throw new Error("Gemini returned no text (" + (d.candidates?.[0]?.finishReason || d.promptFeedback?.blockReason || "unknown") + ")");
-    return text;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_KEY },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 6000, temperature: 0.4 } }) });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 404) { last = `Model ${m} not found`; break; } // try the next model name
+      if (r.status === 429) {
+        limited = true;
+        const raw = JSON.stringify(d.error || {});
+        if (/PerDay/i.test(raw)) { daily = true; break; }           // daily quota for this model is used up: try another model
+        const wait = parseFloat((raw.match(/"retryDelay":\s*"([\d.]+)s"/) || [])[1]) || 15;
+        if (attempt === 0 && wait <= 25) { await sleep(wait * 1000 + 500); continue; } // per-minute limit: wait once and retry
+        break;
+      }
+      if (!r.ok) throw new Error(d.error?.message || "Gemini API error " + r.status);
+      const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+      if (!text) throw new Error("Gemini returned no text (" + (d.candidates?.[0]?.finishReason || d.promptFeedback?.blockReason || "unknown") + ")");
+      return text;
+    }
   }
+  if (limited) throw new Error(daily
+    ? "Gemini free-tier DAILY limit reached on all models. It resets around midnight Pacific time. Try tomorrow, or set ANTHROPIC_API_KEY."
+    : "Gemini free-tier per-minute limit reached. Wait a minute and try again, and tailor fewer jobs at a time.");
   throw new Error(last + ". Set GEMINI_MODEL to a current model id.");
 }
 
@@ -268,7 +350,7 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (!authed(req)) { res.writeHead(401, { "www-authenticate": 'Basic realm="Resume Tailor"' }); return res.end("Password required"); }
   try {
-    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1", u.searchParams.get("mode") || ""));
+    if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1", u.searchParams.get("mode") || "", (u.searchParams.get("companies") || process.env.COMPANIES || "").split(/[,\n]+/).map(x => x.trim()).filter(Boolean)));
     if (u.pathname === "/api/fetchjob") return send(res, 200, { job: await jobFromLink(u.searchParams.get("url") || "") });
     if (u.pathname === "/api/cover" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await cover(resume, job, (extra || "").slice(0, 3000))); }
     if (u.pathname === "/api/tailor" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await tailor(resume, job, (extra || "").slice(0, 3000))); }

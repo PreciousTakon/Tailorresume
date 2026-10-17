@@ -33,6 +33,9 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <select id="tonly"><option value="0">Keywords in title or description</option><option value="1">Keywords in job title only</option></select>
 <select id="mode"><option value="">All work types</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site (or not stated)</option></select>
 <select id="sort"><option value="match">Sort: best match to my resume</option><option value="new">Sort: newest</option></select></div>
+<details style="margin-bottom:8px"><summary class="m" style="cursor:pointer">Optional: company career boards to watch</summary>
+<textarea id="companies" style="min-height:80px;margin-top:8px" placeholder="One per line, e.g.&#10;greenhouse:stripe&#10;lever:palantir&#10;ashby:ramp&#10;or paste a career page link like https://jobs.lever.co/palantir"></textarea>
+<div class="m">Pulls each company's newest openings straight from their own careers system (Greenhouse, Lever, Ashby).</div></details>
 <button class="p" id="go">Search</button> <span class="m" id="smsg"></span></section>
 <section class="card"><h2>Add a job from a link or text</h2>
 <div class="row"><input id="link" placeholder="Paste a job posting URL"><button class="p" id="addlink" style="flex:0 0 auto">Add from link</button></div>
@@ -60,17 +63,19 @@ $("cren").onclick=()=>{const n=(prompt("New name",cur().name)||"").trim();if(!n)
 $("cdel").onclick=()=>{if(!confirm('Delete "'+cur().name+'" and their saved resume?'))return;jobs=[];
  store.list=store.list.filter(c=>c.id!==store.active);if(!store.list.length)store.list=[{id:"c"+Date.now(),name:"Client 1",resume:"",extra:""}];store.active=store.list[0].id;loadUI();persist();render()};
 $("cclr").onclick=()=>{if(!confirm("Delete ALL saved clients, resumes, skills and results from this browser?"))return;
- try{["rt_clients","resume","extra","rt"].forEach(k=>localStorage.removeItem(k))}catch(e){}
- const id="c"+Date.now();store={active:id,list:[{id,name:"Client 1",resume:"",extra:""}]};jobs=[];loadUI();$("smsg").textContent="";render();$("fmsg").textContent="All saved data cleared."};
+ try{["rt_clients","resume","extra","rt","rt_companies"].forEach(k=>localStorage.removeItem(k))}catch(e){}
+ const id="c"+Date.now();store={active:id,list:[{id,name:"Client 1",resume:"",extra:""}]};jobs=[];loadUI();$("companies").value="";$("smsg").textContent="";render();$("fmsg").textContent="All saved data cleared."};
+try{$("companies").value=localStorage.getItem("rt_companies")||""}catch(e){}
+$("companies").oninput=()=>{try{localStorage.setItem("rt_companies",$("companies").value)}catch(e){}};
 loadUI();
 $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
  $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
 $("sort").onchange=()=>render();
 $("go").onclick=async()=>{const q=$("q").value.trim();if(!q){$("smsg").textContent="Enter keywords.";return}
  $("go").disabled=true;$("smsg").textContent="Searching…";
- try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}&title=${$("tonly").value}&mode=${$("mode").value}`);
+ try{const r=await fetch(`/api/jobs?q=${encodeURIComponent(q)}&where=${encodeURIComponent($("where").value)}&hours=${$("hours").value}&title=${$("tonly").value}&mode=${$("mode").value}&companies=${encodeURIComponent($("companies").value.split("\n").map(x=>x.trim()).filter(Boolean).join(","))}`);
   const d=await r.json();if(d.error)throw new Error(d.error);jobs=d.jobs;
-  const names={adzuna:"Adzuna",usajobs:"USAJobs",muse:"The Muse",remotive:"Remotive",jobicy:"Jobicy"};
+  const names={watchlist:"Company boards",jooble:"Jooble",himalayas:"Himalayas",adzuna:"Adzuna",usajobs:"USAJobs",muse:"The Muse",remotive:"Remotive",jobicy:"Jobicy"};
   let m=`${jobs.length} jobs found. `+d.stats.map(x=>`${names[x.source]}: ${x.recent} of ${x.found} in window`).join(" | ");
   if(d.warnings.length)m+=" | Problems: "+d.warnings.join("; ");
   if(!d.adzuna)m+=" | Adzuna not connected (add ADZUNA_APP_ID and ADZUNA_APP_KEY for far more US results).";
@@ -81,7 +86,9 @@ async function tailor(j){const resume=$("resume").value.trim();if(!resume)return
  j.busy=true;j.err="";render();
  try{const r=await fetch("/api/tailor",{method:"POST",body:JSON.stringify({resume,job:j,extra:$("extra").value.trim()})});const d=await r.json();if(d.error)throw new Error(d.error);j.out=d.resume;j.notes=d.notes}
  catch(e){j.err=e.message}j.busy=false;render()}
-$("all").onclick=async()=>{for(const j of jobs.filter(x=>!x.out))await tailor(j)};
+$("all").onclick=async()=>{const todo=jobs.filter(x=>!x.out&&!x.busy);if(!todo.length)return;
+ if(todo.length>5&&confirm(`This will make ${todo.length} AI requests and may hit the free limit. Tailor only the first 5 instead? (OK = first 5, Cancel = all ${todo.length})`))todo.length=5;
+ for(const j of todo){await tailor(j);if(/limit/i.test(j.err||""))break;await new Promise(r=>setTimeout(r,4000))}};
 
 const addJob=j=>{jobs.unshift(j);render()};
 $("addlink").onclick=async()=>{const u=$("link").value.trim();if(!u)return;$("addlink").disabled=true;$("lmsg").textContent="Reading the page…";

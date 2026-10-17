@@ -25,6 +25,11 @@ No `npm install` needed.
 ## Adding jobs by link
 Paste a job URL under "Add a job from a link or text". The server reads the page (using the structured job data most boards embed, or the page text). LinkedIn, Indeed and some others block automated access or need a login; for those, use the "paste the job text instead" box. Links to internal or private addresses are blocked.
 
+## More sources (optional)
+- **Company career boards:** in the app, open "company career boards to watch" and list companies (`greenhouse:stripe`, `lever:palantir`, `ashby:ramp`, or paste a careers-page link). Full descriptions, real posting dates, no key. You can also set the `COMPANIES` env var (comma-separated) as a default.
+- **Jooble:** free key at jooble.org/api/about (US jobs), set `JOOBLE_API_KEY`. The free key has a lifetime limit of 500 requests (the app uses 1 per search), so leave it unset unless you need it. Links go through jooble.org.
+- **Himalayas:** remote jobs, no key. Attribution required: the app links each job back to himalayas.app.
+
 ## Job sources (US-focused)
 - **Adzuna** (recommended, free key at developer.adzuna.com): best US local coverage, supports city/state search. Set `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. Returns only a description snippet, so tailoring is less precise for these.
 - **USAJobs** (optional, free key at developer.usajobs.gov): federal jobs. Set `USAJOBS_KEY` and `USAJOBS_EMAIL`.
