@@ -6,10 +6,12 @@ Searches job boards for postings from the last 24 hours (or 48h / 7 days), then 
 - Search US jobs (Adzuna, USAJobs, The Muse, Remotive, Jobicy) from the last 24h / 48h / 7 days.
 - Add a job by link (works with most boards, BambooHR, Workday, iCIMS) or by pasting the text.
 - Tailors your resume to each job without inventing experience; lists requirements you don't meet.
-- Separate saved profiles per client (resume + extra skills), plus a "Clear all saved data" button. Data stays in your browser only.
+- Separate saved profiles per client (resume + extra skills + email), saved on the server so they follow you to every device. "Clear all saved data" removes them everywhere.
 - Optional box for true skills that aren't on your resume.
 - Filter by Remote / Hybrid / On-site (work type is guessed from the posting text).
 - One-click cover letters per job (truthful, from your resume), downloadable as PDF, .docx or .txt.
+- Saved applications per client: keep each tailored resume and cover letter with its job link, a status (Saved, Applied, Interview, Offer, Rejected, Withdrawn), applied date and notes. Reopen, edit and download them any time; jobs you already saved or applied for are flagged in new searches. Stored with the client, so they sync across devices (about 900 KB total).
+- Export applications as CSV (this client or all clients; opens in Excel or Google Sheets), or send them to a Google Sheet in your Drive (needs the Google setup below).
 - Download resumes as PDF, .docx or .txt.
 
 ## Run
@@ -44,6 +46,20 @@ LinkedIn and Indeed have no open APIs, so they aren't included. Add sources as f
 4. Free instances sleep after 15 minutes idle; the first visit after that takes about a minute.
 
 Set `APP_PASSWORD` locally too if you want a password there.
+
+## Saved clients on every device
+Clients, resumes, extra skills, client emails and your company watch list are saved on the server, behind your `APP_PASSWORD`. Open the site on any device, enter the password, and everything is there. Changes autosave a moment after you stop typing, and a device that was idle picks up changes made elsewhere. If two devices edit at once, the app asks which copy to keep.
+
+Render's free plan wipes the server's disk on every restart and redeploy, so give it a permanent place to save:
+- **Free (recommended):** create a free Redis database at upstash.com, copy its REST URL and REST token, and set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Render. Data limit is about 900 KB (dozens of clients).
+- **Own computer / paid Render disk / VPS:** the app writes `data/data.json` (set `DATA_DIR` to a persistent folder).
+Until one of these is set on Render, the app shows a warning that storage is temporary.
+
+Everyone who knows the password shares the same saved clients. Keep the Upstash token secret, since it can read every saved resume.
+
+## Save to Google Drive button (optional)
+Set `GOOGLE_CLIENT_ID` to add a "Save to Google Drive" button under each resume and cover letter. It uploads the PDF to a folder "Resume Tailor - <client name>" in the signed-in user's Drive, shared view-only with the client's email if you entered one. Sign-in happens in the browser; no Google tokens reach the server.
+Setup: in Google Cloud console create a project, enable the Google Drive API, configure the OAuth consent screen (External; while in Testing, add each user's Google account as a test user), and create an OAuth client ID (Web application) with your site (https://your-app.onrender.com, and http://localhost:3000 for local use) under Authorized JavaScript origins. Scope requested: drive.file (the app can see only files it created).
 
 ## Notes
 - Tailoring never invents experience; it lists requirements your resume doesn't cover.

@@ -18,9 +18,11 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 .notes{border-left:3px solid #1d7a4b;padding:6px 12px;font-size:13px;white-space:pre-wrap;margin:8px 0}
 .out textarea{min-height:320px;font:13px/1.45 ui-monospace,monospace;margin-top:6px}.err{color:#b3411f}
 </style></head><body><main>
-<h1>TRYBE Resume Tailor</h1>
+<h1>Trybe Resume Tailor</h1>
+<section class="card" id="acct"><div class="row" style="margin:0;align-items:center"><span class="m" id="acctmsg" style="flex:3 1 260px"></span><button id="acctbtn" style="flex:0 0 auto">Sync now</button></div></section>
 <section class="card"><h2>1. Client &amp; base resume</h2>
 <div class="row"><select id="client"></select><button id="cnew">New client</button><button id="cren">Rename</button><button id="cdel">Delete</button><button id="cclr">Clear all saved data</button></div>
+<input type="email" id="cemail" placeholder="Client email (optional): their Drive folder is shared with this address" style="margin-bottom:8px">
 <input type="file" id="file" accept=".docx,.txt,.md" style="margin-bottom:8px">
 <textarea id="resume" placeholder="Or paste your resume text"></textarea>
 <details style="margin-top:10px"><summary class="m" style="cursor:pointer">Optional: skills or tools I have that aren't on my resume</summary>
@@ -44,29 +46,37 @@ button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button:disable
 <textarea id="md" placeholder="Paste the full job description"></textarea><button id="addtext" style="margin-top:8px">Add job</button></details>
 <div class="m" id="lmsg"></div></section>
 <section class="card"><div style="display:flex;justify-content:space-between"><h2>3. Jobs &amp; tailored resumes</h2><button id="all">Tailor all</button></div><div id="jobs" class="m">Run a search to see jobs.</div></section>
+<section class="card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h2 id="appsTitle" style="margin:0">4. Saved applications</h2>
+<select id="appfilter" style="width:auto"><option value="">All statuses</option><option>Saved</option><option>Applied</option><option>Interview</option><option>Offer</option><option>Rejected</option><option>Withdrawn</option></select></div>
+<div class="m" id="appsSum" style="margin:6px 0"></div>
+<div class="acts" style="margin:0 0 8px"><button id="expcsv">Export this client (CSV)</button><button id="expall">Export all clients (CSV)</button><button id="expsheet" style="display:none">Send to Google Sheet</button></div>
+<div class="m" id="appsMsg" style="margin-bottom:8px"></div><div id="apps"></div></section>
 </main><script>
 const $=id=>document.getElementById(id);let jobs=[];
+let acct={dirty:false,timer:null,ver:0,ts:(()=>{try{return +localStorage.getItem("rt_ts")||0}catch(e){return 0}})(),err:"",busy:false,loaded:false,durable:true};
 // ---- clients: each client keeps their own resume and extra skills (saved in this browser only) ----
 let store=(()=>{try{const s=JSON.parse(localStorage.getItem("rt_clients"));if(s&&s.list&&s.list.length)return s}catch(e){}
  let r="",x="";try{r=localStorage.getItem("resume")||"";x=localStorage.getItem("extra")||""}catch(e){}
  const id="c"+Date.now();return{active:id,list:[{id,name:"Client 1",resume:r,extra:x}]}})();
 const cur=()=>store.list.find(c=>c.id===store.active)||store.list[0];
-const persist=()=>{try{localStorage.setItem("rt_clients",JSON.stringify(store));localStorage.removeItem("resume");localStorage.removeItem("extra")}catch(e){}};
-const syncFromUI=()=>{const c=cur();c.resume=$("resume").value;c.extra=$("extra").value;persist()};
-function loadUI(){const c=cur();store.active=c.id;$("resume").value=c.resume;$("extra").value=c.extra;
+const persistLocal=()=>{try{localStorage.setItem("rt_clients",JSON.stringify(store));localStorage.removeItem("resume");localStorage.removeItem("extra")}catch(e){}};
+const persist=()=>{persistLocal();markDirty()};
+const syncFromUI=()=>{const c=cur();c.resume=$("resume").value;c.extra=$("extra").value;c.email=$("cemail").value.trim();persist()};
+function loadUI(){const c=cur();store.active=c.id;$("resume").value=c.resume;$("extra").value=c.extra;$("cemail").value=c.email||"";
  $("client").innerHTML="";store.list.forEach(x=>{const o=document.createElement("option");o.value=x.id;o.textContent=x.name;$("client").append(o)});$("client").value=c.id;$("fmsg").textContent=""}
 function leave(){if(jobs.some(j=>j.out||j.letter)&&!confirm("Switching clients clears the jobs and tailored documents on screen. Download anything you need first. Continue?"))return false;syncFromUI();jobs=[];$("smsg").textContent="";return true}
-$("resume").oninput=$("extra").oninput=syncFromUI;
+$("resume").oninput=$("extra").oninput=$("cemail").oninput=syncFromUI;
 $("client").onchange=()=>{const to=$("client").value;if(!leave()){$("client").value=store.active;return}store.active=to;loadUI();persist();render()};
 $("cnew").onclick=()=>{const n=(prompt("Client name")||"").trim();if(!n||!leave())return;const id="c"+Date.now();store.list.push({id,name:n,resume:"",extra:""});store.active=id;loadUI();persist();render()};
 $("cren").onclick=()=>{const n=(prompt("New name",cur().name)||"").trim();if(!n)return;cur().name=n;loadUI();persist()};
-$("cdel").onclick=()=>{if(!confirm('Delete "'+cur().name+'" and their saved resume?'))return;jobs=[];
+$("cdel").onclick=()=>{if(!confirm('Delete "'+cur().name+'", their saved resume and all their saved applications?'))return;jobs=[];
  store.list=store.list.filter(c=>c.id!==store.active);if(!store.list.length)store.list=[{id:"c"+Date.now(),name:"Client 1",resume:"",extra:""}];store.active=store.list[0].id;loadUI();persist();render()};
-$("cclr").onclick=()=>{if(!confirm("Delete ALL saved clients, resumes, skills and results from this browser?"))return;
- try{["rt_clients","resume","extra","rt","rt_companies"].forEach(k=>localStorage.removeItem(k))}catch(e){}
- const id="c"+Date.now();store={active:id,list:[{id,name:"Client 1",resume:"",extra:""}]};jobs=[];loadUI();$("companies").value="";$("smsg").textContent="";render();$("fmsg").textContent="All saved data cleared."};
+$("cclr").onclick=()=>{if(!confirm("Delete ALL saved clients, resumes, skills and results? This also clears them on the server, so they disappear on your other devices too."))return;
+ try{["rt_clients","resume","extra","rt","rt_companies","rt_dirty"].forEach(k=>localStorage.removeItem(k))}catch(e){}
+ const id="c"+Date.now();store={active:id,list:[{id,name:"Client 1",resume:"",extra:""}]};jobs=[];loadUI();$("companies").value="";$("smsg").textContent="";render();$("fmsg").textContent="All saved data cleared.";
+ persistLocal();acct.dirty=true;acct.ver++;lsSet("rt_dirty","1");pushRemote(true)}; // force: a deliberate clear must overwrite the server copy
 try{$("companies").value=localStorage.getItem("rt_companies")||""}catch(e){}
-$("companies").oninput=()=>{try{localStorage.setItem("rt_companies",$("companies").value)}catch(e){}};
+$("companies").oninput=()=>{try{localStorage.setItem("rt_companies",$("companies").value)}catch(e){}markDirty()};
 loadUI();
 $("file").onchange=async e=>{const f=e.target.files[0];if(!f)return;
  $("resume").value=/\.docx$/i.test(f.name)?(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value.trim():(await f.text()).trim();$("resume").oninput()};
@@ -143,13 +153,145 @@ function buildLetterPdf(body){const {jsPDF}=window.jspdf,{name,contact}=letterHe
  d.setFontSize(11);
  clean(body).replace(/\r/g,"").split("\n").forEach(p=>{if(!p.trim()){y+=7;return}d.splitTextToSize(p.trim(),W-2*M).forEach(ln=>{if(y>H-M){d.addPage();y=M}d.text(ln,M,y);y+=15.5})});
  return d}
+
+// ---- Google Drive: signs in from this browser; files go to a folder per client ----
+let CFG={},gTok=null,gExp=0;
+fetch("/api/config").then(r=>r.json()).then(c=>{CFG=c;if(c.googleClientId){const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.async=true;document.head.append(s);render()}}).catch(()=>{});
+function gToken(){return new Promise((res,rej)=>{
+ if(gTok&&Date.now()<gExp-60000)return res(gTok);
+ if(!(window.google&&google.accounts&&google.accounts.oauth2))return rej(new Error("Google sign-in hasn't loaded yet. Wait a few seconds and try again."));
+ google.accounts.oauth2.initTokenClient({client_id:CFG.googleClientId,scope:"https://www.googleapis.com/auth/drive.file",
+  callback:r=>{if(r.error)return rej(new Error(r.error_description||r.error));gTok=r.access_token;gExp=Date.now()+(r.expires_in||3600)*1000;res(gTok)},
+  error_callback:e=>rej(new Error("Google sign-in was cancelled or blocked ("+(e.type||e.message||"error")+"). Allow pop-ups and try again."))}).requestAccessToken()})}
+async function gd(path,opt={}){const r=await fetch("https://www.googleapis.com"+path,{...opt,headers:{Authorization:"Bearer "+gTok,...(opt.headers||{})}});
+ if(!r.ok){let m="";try{m=(await r.json()).error.message}catch(e){}if(r.status===401)gTok=null;throw new Error("Google Drive: "+(m||r.status))}return r.status===204?{}:r.json()}
+async function clientFolder(){const c=cur();
+ if(c.folderId){try{const f=await gd(`/drive/v3/files/${c.folderId}?fields=id,trashed`);if(!f.trashed)return shareFolder(c)}catch(e){}c.folderId=null;c.sharedWith=null}
+ const f=await gd("/drive/v3/files?fields=id",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Resume Tailor - "+c.name,mimeType:"application/vnd.google-apps.folder"})});
+ c.folderId=f.id;persist();return shareFolder(c)}
+async function shareFolder(c){
+ if(c.email&&c.sharedWith!==c.email){await gd(`/drive/v3/files/${c.folderId}/permissions?sendNotificationEmail=true`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({role:"reader",type:"user",emailAddress:c.email})});c.sharedWith=c.email;persist()}
+ return c.folderId}
+async function toDrive(j,kind,txt){const isL=kind==="letter";
+ j.err="";j.dmsg="";
+ try{await gToken();                                   // first await: keeps the sign-in popup tied to the click
+  const text=txt!==undefined?txt:document.getElementById((isL?"l":"o")+j.id).value,blob=(isL?buildLetterPdf(text):buildPdf(text)).output("blob"),name=fileName(j,isL)+".pdf";
+  j.dmsg="Saving to Google Drive…";render();
+  const folder=await clientFolder(),b="rtb"+Date.now();
+  const body=new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({name,parents:[folder]})}\r\n--${b}\r\nContent-Type: application/pdf\r\n\r\n`,blob,`\r\n--${b}--`]);
+  const f=await gd("/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",{method:"POST",headers:{"Content-Type":"multipart/related; boundary="+b},body});
+  j.dmsg="Saved to Google Drive: "+f.name+(cur().email&&cur().sharedWith===cur().email?" (folder shared with "+cur().email+")":"");j.dlink=f.webViewLink}
+ catch(e){j.err=e.message;j.dmsg=""}render()}
+const driveBtn=(j,kind)=>{const b=document.createElement("button");b.textContent="Save to Google Drive";b.onclick=()=>toDrive(j,kind);return b};
+
+// ---- Sync: clients are saved on the server (behind your app password) so every device sees them ----
+const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+function syncMsg(){const m=$("acctmsg");if(!m)return;let t,c="m";
+ if(acct.err){t="Not saved to the server: "+acct.err;c="err"}
+ else if(!acct.loaded)t="Connecting to your saved clients…";
+ else if(acct.dirty||acct.busy)t="Saving…";
+ else t="All changes saved. Open this site on another device and your clients will be there.";
+ if(acct.loaded&&!acct.durable&&!acct.err){t+=" Warning: the server's storage is temporary, so saved clients can disappear after a restart. See the README to make it permanent.";c="err"}
+ m.textContent=t;m.className=c}
+function markDirty(){acct.dirty=true;acct.ver++;lsSet("rt_dirty","1");clearTimeout(acct.timer);if(acct.loaded)acct.timer=setTimeout(()=>pushRemote(),1200);syncMsg()}
+async function pushRemote(force){
+ if(acct.busy){acct.timer=setTimeout(()=>pushRemote(force),800);return}
+ acct.busy=true;const v=acct.ver;
+ try{const r=await fetch("/api/data"+(force?"?force=1":""),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({base:acct.ts,store,companies:$("companies").value})});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===409){acct.busy=false;acct.loaded=false;return pullRemote()}
+  if(!r.ok)throw new Error(d.error||("server error "+r.status));
+  acct.ts=d.ts;lsSet("rt_ts",String(d.ts));if(acct.ver===v){acct.dirty=false;lsSet("rt_dirty","0")}acct.err=""}
+ catch(e){acct.err=e.message}
+ acct.busy=false;syncMsg()}
+function adopt(rem){store=rem.data.store;$("companies").value=rem.data.companies||"";lsSet("rt_companies",$("companies").value);
+ jobs=[];loadUI();persistLocal();render();acct.ts=rem.ts;lsSet("rt_ts",String(rem.ts));acct.dirty=false;lsSet("rt_dirty","0")}
+async function pullRemote(){
+ try{const r=await fetch("/api/data");if(!r.ok)throw new Error("server error "+r.status);const d=await r.json();acct.durable=d.durable!==false;
+  const has=d.data&&d.data.store&&Array.isArray(d.data.store.list)&&d.data.store.list.length;
+  const localHas=store.list.some(c=>c.resume||c.extra||c.email),dirty=lsGet("rt_dirty")==="1";
+  acct.err="";
+  if(!has){acct.loaded=true;if(localHas)await pushRemote(true)}
+  else if(d.ts===acct.ts){acct.loaded=true;if(dirty)await pushRemote()}
+  else if(!localHas||(!dirty&&acct.ts>0)){adopt(d);acct.loaded=true}
+  else if(confirm("Saved clients were found on the server.\n\nOK = load them (replaces the clients in this browser)\nCancel = keep this browser's clients and overwrite the server copy")){adopt(d);acct.loaded=true}
+  else{acct.loaded=true;await pushRemote(true)}}
+ catch(e){acct.err="can't reach the server ("+e.message+")"}
+ syncMsg()}
+$("acctbtn").onclick=()=>pullRemote();
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!acct.dirty&&!acct.busy)pullRemote()});
+pullRemote();
+
+// ---- Saved applications (kept inside each client's record, so they sync like everything else) ----
+const STATUSES=["Saved","Applied","Interview","Offer","Rejected","Withdrawn"],appUi={};
+const appKey=j=>(j.url&&j.url!=="#")?j.url:((j.company||"")+"|"+(j.title||"")).toLowerCase();
+const appFor=j=>(cur().apps||[]).find(x=>x.key===appKey(j)||((x.company||"")+"|"+(x.title||"")).toLowerCase()===((j.company||"")+"|"+(j.title||"")).toLowerCase());
+function saveApp(j){const c=cur();c.apps=c.apps||[];let a=appFor(j);
+ if(!a){a={id:"a"+Date.now(),key:appKey(j),status:"Saved",applied:"",notes:"",savedAt:Date.now()};c.apps.push(a)}
+ Object.assign(a,{title:j.title,company:j.company,location:j.location||"",url:j.url||"",source:j.source||"",resume:j.out||a.resume||"",letter:j.letter||a.letter||"",updatedAt:Date.now()});
+ persist();render();
+ if(JSON.stringify(store).length>800000)alert("Your saved data is getting close to the server's size limit (about 900 KB). Delete old applications you no longer need.")}
+function renderApps(){const box=$("apps");if(!box)return;$("expsheet").style.display=CFG.googleClientId?"":"none";const c=cur(),all=c.apps||[],f=$("appfilter").value;
+ $("appsTitle").textContent="4. Saved applications for "+c.name+" ("+all.length+")";
+ const cnt={};all.forEach(a=>cnt[a.status]=(cnt[a.status]||0)+1);$("appsSum").textContent=STATUSES.filter(s=>cnt[s]).map(s=>s+" "+cnt[s]).join(" · ");
+ box.textContent="";const list=all.filter(a=>!f||a.status===f).sort((a,b)=>b.savedAt-a.savedAt);
+ if(!list.length){box.className="m";box.textContent=all.length?"No applications with that status.":"Nothing saved yet. After tailoring a resume, click “Save to applications”.";return}
+ box.className="";
+ list.forEach(a=>{const ui=appUi[a.id]||(appUi[a.id]={}),el=document.createElement("div");el.className="job";
+  const h=document.createElement("div");h.innerHTML='<b></b> <span class="m"></span>';h.querySelector("b").textContent=a.title+" · "+a.company;
+  h.querySelector("span").textContent=[a.location,"saved "+new Date(a.savedAt).toLocaleDateString(),a.applied?"applied "+a.applied:""].filter(Boolean).join(" · ")+" ";
+  if(a.url&&a.url!=="#"){const l=document.createElement("a");l.href=a.url;l.target="_blank";l.rel="noopener";l.textContent="View posting";h.querySelector("span").append(l)}
+  el.append(h);
+  const row=document.createElement("div");row.className="row";row.style.marginTop="6px";
+  const sel=document.createElement("select");sel.style.flex="0 1 150px";STATUSES.forEach(s=>{const o=document.createElement("option");o.textContent=s;sel.append(o)});sel.value=a.status;
+  sel.onchange=()=>{a.status=sel.value;if(a.status==="Applied"&&!a.applied)a.applied=new Date().toISOString().slice(0,10);persist();renderApps()};
+  const nt=document.createElement("input");nt.type="text";nt.placeholder="Notes (contact, interview date…)";nt.value=a.notes||"";nt.oninput=()=>{a.notes=nt.value;persist()};
+  row.append(sel,nt);el.append(row);
+  const d=document.createElement("details");d.style.marginTop="6px";d.open=!!ui.open;d.ontoggle=()=>ui.open=d.open;
+  const sm=document.createElement("summary");sm.className="m";sm.style.cursor="pointer";sm.textContent="Resume & cover letter";d.append(sm);
+  const mk=(label,key,isL)=>{const w=document.createElement("div");w.className="out";const lb=document.createElement("div");lb.className="m";lb.textContent=label;
+   const t=document.createElement("textarea");t.style.minHeight="220px";t.value=a[key]||"";t.oninput=()=>{a[key]=t.value;persist()};
+   const bs=document.createElement("div");bs.className="acts";
+   [["pdf","PDF"],["docx",".docx"],["txt",".txt"]].forEach(([x,n])=>{const b=document.createElement("button");b.textContent="Download "+n;b.onclick=()=>a[key]?dlText(a[key],a.title,x,isL):0;bs.append(b)});
+   if(CFG.googleClientId){const b=document.createElement("button");b.textContent="Save to Google Drive";b.onclick=()=>{ui.title=a.title;ui.id=a.id;toDrive(ui,isL?"letter":"resume",a[key])};bs.append(b)}
+   w.append(lb,t,bs);return w};
+  d.append(mk("Resume","resume",false),mk("Cover letter","letter",true));
+  const x=document.createElement("button");x.textContent="Delete this application";x.style.marginTop="8px";
+  x.onclick=()=>{if(!confirm("Delete this saved application?"))return;c.apps=c.apps.filter(q=>q!==a);persist();renderApps();renderJobs()};d.append(x);
+  el.append(d);
+  if(ui.err){const e=document.createElement("div");e.className="err";e.textContent=ui.err;el.append(e)}
+  if(ui.dmsg){const e=document.createElement("div");e.className="m";e.textContent=ui.dmsg+" ";if(ui.dlink){const l=document.createElement("a");l.href=ui.dlink;l.target="_blank";l.rel="noopener";l.textContent="Open in Drive";e.append(l)}el.append(e)}
+  box.append(el)})}
+$("appfilter").onchange=renderApps;
+
+// ---- Export applications: CSV (opens in Excel / Google Sheets) or a Google Sheet in your Drive ----
+const csvCell=v=>{v=String(v==null?"":v);if(/^[=+\-@\t\r]/.test(v))v="'"+v;return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+function csvFor(cs){const rows=[["Client","Job title","Company","Location","Status","Date saved","Date applied","Notes","Job link","Source"]];
+ cs.forEach(c=>(c.apps||[]).slice().sort((a,b)=>b.savedAt-a.savedAt).forEach(a=>rows.push([c.name,a.title,a.company,a.location,a.status,new Date(a.savedAt).toISOString().slice(0,10),a.applied||"",a.notes||"",a.url&&a.url!=="#"?a.url:"",a.source||""])));
+ return rows.map(r=>r.map(csvCell).join(",")).join("\r\n")}
+const today=()=>new Date().toISOString().slice(0,10),safeName=s=>s.replace(/[\\\/:*?"<>|]/g,"-").trim();
+function exportCsv(all){const cs=all?store.list:[cur()];if(!cs.some(c=>(c.apps||[]).length)){$("appsMsg").textContent="Nothing to export yet.";return}
+ const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["\ufeff"+csvFor(cs)],{type:"text/csv;charset=utf-8"}));
+ a.download="Applications - "+safeName(all?"All clients":cur().name)+" - "+today()+".csv";a.click();URL.revokeObjectURL(a.href);$("appsMsg").textContent="Exported. Open the file in Excel or Google Sheets."}
+async function toSheet(){const c=cur();$("appsMsg").textContent="";
+ try{await gToken();$("appsMsg").textContent="Sending to Google Sheets…";
+  const csv=csvFor([c]);let f=null;
+  if(c.sheetId){try{f=await gd(`/upload/drive/v3/files/${c.sheetId}?uploadType=media&fields=id,webViewLink`,{method:"PATCH",headers:{"Content-Type":"text/csv"},body:new Blob([csv],{type:"text/csv"})})}catch(e){f=null}}
+  if(!f){const b="rts"+Date.now(),meta={name:"Resume Tailor - Applications - "+c.name,mimeType:"application/vnd.google-apps.spreadsheet"};
+   f=await gd("/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink",{method:"POST",headers:{"Content-Type":"multipart/related; boundary="+b},
+    body:new Blob([`--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${b}\r\nContent-Type: text/csv\r\n\r\n`,csv,`\r\n--${b}--`])});
+   c.sheetId=f.id;persist()}
+  const m=$("appsMsg");m.textContent="Google Sheet updated. ";const l=document.createElement("a");l.href=f.webViewLink;l.target="_blank";l.rel="noopener";l.textContent="Open the sheet";m.append(l)}
+ catch(e){$("appsMsg").textContent=e.message}}
+$("expcsv").onclick=()=>exportCsv(false);$("expall").onclick=()=>exportCsv(true);$("expsheet").onclick=toSheet;
 function fileName(j,isL){const raw=letterHead().name||"Resume",nm=raw===raw.toUpperCase()?raw.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()):raw;
  const fn=s=>s.replace(/[\\\/]/g,"-").replace(/[:*?"<>|]/g,"").replace(/\s+/g," ").trim().slice(0,60);
  return fn(nm)+"_"+fn(j.title)+(isL?"_Cover Letter":"")}
-async function dl(j,ext,kind){const isL=kind==="letter",text=document.getElementById((isL?"l":"o")+j.id).value;
+async function dlText(text,title,ext,isL){
  const full=isL?(letterHead().name+"\n"+letterHead().contact+"\n\n"+text):text;
  const blob=ext==="pdf"?(isL?buildLetterPdf(text):buildPdf(text)).output("blob"):ext==="docx"?await docx(full):new Blob([full],{type:"text/plain"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=fileName(j,isL)+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=fileName({title},isL)+"."+ext;a.click();URL.revokeObjectURL(a.href)}
+async function dl(j,ext,kind){const isL=kind==="letter";return dlText(document.getElementById((isL?"l":"o")+j.id).value,j.title,ext,isL)}
 async function letter(j){const resume=$("resume").value.trim();if(!resume)return alert("Add your resume first.");
  j.lbusy=true;j.err="";render();
  try{const r=await fetch("/api/cover",{method:"POST",body:JSON.stringify({resume,job:j,extra:$("extra").value.trim()})});const d=await r.json();if(d.error)throw new Error(d.error);j.letter=d.letter}
@@ -165,7 +307,8 @@ function skillTerms(resume){
   out.add(lw)});
  return out}
 function scoreJob(terms,j){const t=new Set(tok((j.title+" "+j.description).toLowerCase()));let n=0;terms.forEach(x=>{if(t.has(x))n++});return n}
-function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
+function render(){renderJobs();renderApps()}
+function renderJobs(){const box=$("jobs");box.textContent="";if(!jobs.length){box.textContent="No jobs.";return}
  const terms=skillTerms($("resume").value);
  const qw=$("q").value.toLowerCase().split(/\s+/).filter(w=>w&&!["engineer","senior","sr","manager","developer","lead","staff","principal","the","and","jr","junior","specialist","analyst"].includes(w));
  jobs.forEach(j=>{j.score=terms.size?scoreJob(terms,j):null;j.rank=(j.score||0)+qw.filter(w=>j.title.toLowerCase().includes(w)).length*8});
@@ -173,22 +316,28 @@ function render(){const box=$("jobs");box.textContent="";if(!jobs.length){box.te
  list.forEach(j=>{const el=document.createElement("div");el.className="job";
   const age=Math.max(1,Math.round((Date.now()-j.posted)/3600e3));
   el.innerHTML=`<b></b> <span class="m"></span><div class="m"></div>`;el.querySelector("b").textContent=j.title+" · "+j.company;
-  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago",({remote:"Remote",hybrid:"Hybrid",onsite:"On-site"})[j.mode]||"",j.score!=null?j.score+" of your skills matched":""].filter(Boolean).join(" · ");
+  el.querySelector("span").textContent=[j.location,j.source,["Link","Pasted"].includes(j.source)?"":age+"h ago",({remote:"Remote",hybrid:"Hybrid",onsite:"On-site"})[j.mode]||"",j.score!=null?j.score+" of your skills matched":"",appFor(j)?"In applications: "+appFor(j).status:""].filter(Boolean).join(" · ");
   const l=document.createElement("a");l.href=j.url;if(j.url==="#")l.style.display="none";l.target="_blank";l.rel="noopener";l.textContent="View posting";el.lastChild.append(l);
   const acts=document.createElement("div");acts.className="acts";const b=document.createElement("button");b.className="p";b.disabled=!!j.busy;
   b.textContent=j.busy?"Tailoring…":j.out?"Re-tailor":"Tailor resume";b.onclick=()=>tailor(j);acts.append(b);
-  const cb=document.createElement("button");cb.disabled=!!j.lbusy;cb.textContent=j.lbusy?"Writing…":j.letter?"Rewrite cover letter":"Cover letter";cb.onclick=()=>letter(j);acts.append(cb);el.append(acts);
+  const cb=document.createElement("button");cb.disabled=!!j.lbusy;cb.textContent=j.lbusy?"Writing…":j.letter?"Rewrite cover letter":"Cover letter";cb.onclick=()=>letter(j);acts.append(cb);
+  if(j.out||j.letter){const sb=document.createElement("button");sb.textContent=appFor(j)?"Update saved application":"Save to applications";sb.onclick=()=>saveApp(j);acts.append(sb)}
+  el.append(acts);
   if(j.err){const e=document.createElement("div");e.className="err";e.textContent=j.err;el.append(e)}
+  if(j.dmsg){const e=document.createElement("div");e.className="m";e.textContent=j.dmsg+" ";if(j.dlink){const l=document.createElement("a");l.href=j.dlink;l.target="_blank";l.rel="noopener";l.textContent="Open in Drive";e.append(l)}el.append(e)}
   if(j.out){j.id=j.id;const o=document.createElement("div");o.className="out";
    if(j.notes){const n=document.createElement("div");n.className="notes";n.textContent=j.notes;o.append(n)}
    const t=document.createElement("textarea");t.id="o"+j.id;t.value=j.out;t.oninput=()=>j.out=t.value;
    const a=document.createElement("div");a.className="acts";
    [["pdf","Download PDF"],["docx","Download .docx"],["txt","Download .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x);a.append(d)});
+   if(CFG.googleClientId)a.append(driveBtn(j,"resume"));
    o.append(t,a);el.append(o)}
   if(j.letter){const o=document.createElement("div");o.className="out";const hd=document.createElement("div");hd.className="m";hd.textContent="Cover letter";
    const t=document.createElement("textarea");t.id="l"+j.id;t.style.minHeight="260px";t.value=j.letter;t.oninput=()=>j.letter=t.value;
    const a=document.createElement("div");a.className="acts";
    [["pdf","Download letter PDF"],["docx","Download letter .docx"],["txt","Download letter .txt"]].forEach(([x,n],i)=>{const d=document.createElement("button");if(!i)d.className="p";d.textContent=n;d.onclick=()=>dl(j,x,"letter");a.append(d)});
+   if(CFG.googleClientId)a.append(driveBtn(j,"letter"));
    o.append(hd,t,a);el.append(o)}
   box.append(el)})}
+renderApps();
 </script></body></html>

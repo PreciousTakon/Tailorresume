@@ -15,6 +15,25 @@ const authed = req => {
   return crypto.timingSafeEqual(a, b);
 };
 
+// ---- Saved clients: one shared data file/record, protected by the app password ----
+const UP_URL = clean(process.env.UPSTASH_REDIS_REST_URL), UP_TOKEN = clean(process.env.UPSTASH_REDIS_REST_TOKEN);
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data"), DATA_KEY = "resume-tailor:data";
+const durable = () => !!(UP_URL || process.env.DATA_DIR || !process.env.RENDER);
+if (process.env.RENDER && !UP_URL && !process.env.DATA_DIR) console.warn("WARNING: saved clients will be lost when Render restarts. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (see README).");
+async function upstash(cmd) {
+  const r = await fetch(UP_URL, { method: "POST", headers: { Authorization: "Bearer " + UP_TOKEN }, body: JSON.stringify(cmd), signal: AbortSignal.timeout(15000) });
+  const d = await r.json().catch(() => ({})); if (!r.ok || d.error) throw new Error("Storage error: " + (d.error || r.status)); return d.result;
+}
+async function loadData() {
+  if (UP_URL) { const v = await upstash(["GET", DATA_KEY]); return v ? JSON.parse(v) : null; }
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "data.json"), "utf8")); } catch (e) { return null; }
+}
+async function saveData(obj) {
+  const s = JSON.stringify(obj);
+  if (UP_URL) { if (s.length > 900000) throw new Error("Saved data is too large (limit about 900 KB). Delete old clients."); await upstash(["SET", DATA_KEY, s]); }
+  else { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(path.join(DATA_DIR, "data.json"), s); }
+}
+
 const strip = h => (h || "").replace(/<(br|\/p|\/li|\/h\d)\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ")
   .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
   .replace(/&#39;|&rsquo;/g, "'").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n\n").trim();
@@ -350,6 +369,18 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (!authed(req)) { res.writeHead(401, { "www-authenticate": 'Basic realm="Resume Tailor"' }); return res.end("Password required"); }
   try {
+    if (u.pathname === "/api/data") {
+      if (req.method === "GET") { const d = await loadData(); return send(res, 200, { ts: d ? d.ts : 0, data: d ? d.data : null, durable: durable() }); }
+      if (req.method === "PUT") {
+        const b = JSON.parse(await body(req)), cur = await loadData();
+        if (cur && cur.ts > (+b.base || 0) && u.searchParams.get("force") !== "1") return send(res, 409, { error: "conflict", ts: cur.ts });
+        if (!b.store || !Array.isArray(b.store.list)) return send(res, 400, { error: "Bad data" });
+        const ts = Math.max(Date.now(), (cur ? cur.ts : 0) + 1);
+        await saveData({ ts, data: { v: 1, store: b.store, companies: String(b.companies || "").slice(0, 5000) } });
+        return send(res, 200, { ts });
+      }
+    }
+    if (u.pathname === "/api/config") return send(res, 200, { googleClientId: clean(process.env.GOOGLE_CLIENT_ID) });
     if (u.pathname === "/api/jobs") return send(res, 200, await search(u.searchParams.get("q") || "", u.searchParams.get("where") || "", +u.searchParams.get("hours") || 24, u.searchParams.get("title") === "1", u.searchParams.get("mode") || "", (u.searchParams.get("companies") || process.env.COMPANIES || "").split(/[,\n]+/).map(x => x.trim()).filter(Boolean)));
     if (u.pathname === "/api/fetchjob") return send(res, 200, { job: await jobFromLink(u.searchParams.get("url") || "") });
     if (u.pathname === "/api/cover" && req.method === "POST") { const { resume, job, extra } = JSON.parse(await body(req)); return send(res, 200, await cover(resume, job, (extra || "").slice(0, 3000))); }
